@@ -1,0 +1,103 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/sci-agent/events.schema.json",
+  "title": "SciAgent WebSocket Event Schema",
+  "description": "科研多 Agent 协作系统统一 WS 事件结构",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eventId",
+    "ts",
+    "topicId",
+    "runId",
+    "agentId",
+    "kind",
+    "severity",
+    "summary"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9-]{8,}$",
+      "description": "事件唯一 ID（uuid-like）"
+    },
+    "ts": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "毫秒级 Unix 时间戳"
+    },
+    "topicId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agentId": {
+      "type": "string",
+      "enum": ["review", "ideation", "experiment"]
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["agent_status_updated", "event_emitted", "artifact_created"]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warn", "error"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "type": "object",
+      "description": "扩展字段，按事件类型承载业务上下文",
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifactId", "name", "uri", "contentType"],
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uri": {
+            "type": "string",
+            "minLength": 1
+          },
+          "contentType": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "traceId": {
+      "type": "string"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "artifact_created"
+          }
+        },
+        "required": ["kind"]
+      },
+      "then": {
+        "required": ["artifacts"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,157 @@
+﻿[
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40001",
+    "ts": 1771462800000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260219-001",
+    "agentId": "review",
+    "kind": "agent_status_updated",
+    "severity": "info",
+    "summary": "review 开始检索相关文献并构建初步 survey",
+    "payload": {
+      "status": "running",
+      "progress": 0.18,
+      "focus": "神经符号方法在科学发现中的应用"
+    },
+    "traceId": "trace-run-20260219-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40002",
+    "ts": 1771462865000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260219-001",
+    "agentId": "review",
+    "kind": "artifact_created",
+    "severity": "info",
+    "summary": "review 产出 survey.md，等待发送给 ideation",
+    "payload": {
+      "stage": "review_to_ideation",
+      "handoffTo": "ideation",
+      "artifactRole": "survey"
+    },
+    "artifacts": [
+      {
+        "artifactId": "art-survey-001",
+        "name": "survey.md",
+        "uri": "artifact://topic-neural-symbolic-discovery/run-20260219-001/survey.md",
+        "contentType": "text/markdown"
+      }
+    ],
+    "traceId": "trace-run-20260219-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40003",
+    "ts": 1771462871000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260219-001",
+    "agentId": "review",
+    "kind": "event_emitted",
+    "severity": "info",
+    "summary": "review 已将 survey 发给 ideation",
+    "payload": {
+      "eventType": "handoff",
+      "fromAgent": "review",
+      "toAgent": "ideation",
+      "artifactId": "art-survey-001"
+    },
+    "traceId": "trace-run-20260219-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40004",
+    "ts": 1771462910000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260219-001",
+    "agentId": "ideation",
+    "kind": "artifact_created",
+    "severity": "info",
+    "summary": "ideation 生成 idea.json 并选定可实验假设",
+    "payload": {
+      "stage": "ideation_to_experiment",
+      "handoffTo": "experiment",
+      "selectedIdeaId": "idea-2"
+    },
+    "artifacts": [
+      {
+        "artifactId": "art-idea-001",
+        "name": "idea.json",
+        "uri": "artifact://topic-neural-symbolic-discovery/run-20260219-001/idea.json",
+        "contentType": "application/json"
+      }
+    ],
+    "traceId": "trace-run-20260219-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40005",
+    "ts": 1771462922000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260219-001",
+    "agentId": "ideation",
+    "kind": "event_emitted",
+    "severity": "info",
+    "summary": "ideation 已将 idea 发给 experiment",
+    "payload": {
+      "eventType": "handoff",
+      "fromAgent": "ideation",
+      "toAgent": "experiment",
+      "artifactId": "art-idea-001"
+    },
+    "traceId": "trace-run-20260219-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40006",
+    "ts": 1771462980000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260219-001",
+    "agentId": "experiment",
+    "kind": "agent_status_updated",
+    "severity": "error",
+    "summary": "experiment 首次实验失败：参数组合不收敛",
+    "payload": {
+      "status": "failed",
+      "errorCode": "SIM_NOT_CONVERGED",
+      "retryable": true
+    },
+    "traceId": "trace-run-20260219-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40007",
+    "ts": 1771463040000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260219-001",
+    "agentId": "experiment",
+    "kind": "artifact_created",
+    "severity": "info",
+    "summary": "experiment 重试后产出 results.json",
+    "payload": {
+      "stage": "experiment_to_ideation_feedback",
+      "handoffTo": "ideation",
+      "resultQuality": "usable"
+    },
+    "artifacts": [
+      {
+        "artifactId": "art-results-001",
+        "name": "results.json",
+        "uri": "artifact://topic-neural-symbolic-discovery/run-20260219-001/results.json",
+        "contentType": "application/json"
+      }
+    ],
+    "traceId": "trace-run-20260219-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40008",
+    "ts": 1771463046000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260219-001",
+    "agentId": "experiment",
+    "kind": "event_emitted",
+    "severity": "info",
+    "summary": "experiment 将 results 反馈给 ideation 进行下一轮改进",
+    "payload": {
+      "eventType": "feedback",
+      "fromAgent": "experiment",
+      "toAgent": "ideation",
+      "artifactId": "art-results-001"
+    },
+    "traceId": "trace-run-20260219-001"
+  }
+]
