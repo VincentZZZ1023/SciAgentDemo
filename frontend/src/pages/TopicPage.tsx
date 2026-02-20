@@ -6,6 +6,7 @@ import type { AppLayoutContext } from "../app/AppLayout";
 import { AgentDrawer } from "../components/cli/AgentDrawer";
 import { EventFeed } from "../components/feed/EventFeed";
 import { FlowCanvas } from "../components/flow/FlowCanvas";
+import { TraceFlowCanvas } from "../components/trace/TraceFlowCanvas";
 import { TraceTimeline } from "../components/trace/TraceTimeline";
 import { ThemeToggle } from "../components/ThemeToggle";
 import {
@@ -120,6 +121,7 @@ export const TopicPage = () => {
   const [error, setError] = useState("");
   const [wsStatus, setWsStatus] = useState<WsStatus>("closed");
   const [viewMode, setViewMode] = useState<"pipeline" | "trace">("pipeline");
+  const [traceView, setTraceView] = useState<"list" | "graph">("list");
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<AgentId | null>(null);
@@ -205,6 +207,7 @@ export const TopicPage = () => {
     setTraceError("");
     setWsStatus("connecting");
     setViewMode("pipeline");
+    setTraceView("list");
     setTopic(null);
     setEvents([]);
     setArtifacts([]);
@@ -414,12 +417,39 @@ export const TopicPage = () => {
         </div>
       ) : (
         <div className="topic-trace-panel">
-          <TraceTimeline
-            items={traceItems}
-            artifacts={artifacts}
-            loading={loadingTrace}
-            error={traceError}
-          />
+          <div className="trace-view-switch">
+            <button
+              type="button"
+              className={traceView === "list" ? "active" : ""}
+              onClick={() => setTraceView("list")}
+            >
+              List
+            </button>
+            <button
+              type="button"
+              className={traceView === "graph" ? "active" : ""}
+              onClick={() => setTraceView("graph")}
+            >
+              Graph
+            </button>
+          </div>
+          <div className="topic-trace-content">
+            {traceView === "list" ? (
+              <TraceTimeline
+                items={traceItems}
+                artifacts={artifacts}
+                loading={loadingTrace}
+                error={traceError}
+              />
+            ) : (
+              <TraceFlowCanvas
+                items={traceItems}
+                artifacts={artifacts}
+                loading={loadingTrace}
+                error={traceError}
+              />
+            )}
+          </div>
         </div>
       )}
 

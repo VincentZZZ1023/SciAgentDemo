@@ -703,6 +703,16 @@ class DatabaseStore:
                         continue
 
                     name = artifact.get("name") if isinstance(artifact.get("name"), str) else "artifact"
+                    timeline_payload: dict[str, object] = {"artifact": artifact}
+                    if isinstance(payload, dict):
+                        handoff_to = payload.get("handoffTo")
+                        if isinstance(handoff_to, str) and handoff_to in AgentId._value2member_map_:
+                            timeline_payload["handoffTo"] = handoff_to
+                        artifact_role = payload.get("artifactRole")
+                        if isinstance(artifact_role, str) and artifact_role:
+                            timeline_payload["artifactRole"] = artifact_role
+                    timeline_payload["eventSummary"] = row.summary
+
                     timeline_items.append(
                         {
                             "id": f"artifact-{artifact_id}",
@@ -710,7 +720,7 @@ class DatabaseStore:
                             "agentId": row.agent_id,
                             "kind": TraceItemKind.artifact.value,
                             "summary": f"artifact: {name}",
-                            "payload": {"artifact": artifact},
+                            "payload": timeline_payload,
                         }
                     )
                     artifact_ids.add(artifact_id)

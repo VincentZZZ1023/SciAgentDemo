@@ -265,7 +265,11 @@ export const mapEventToTraceItems = (event: Event): TraceItem[] => {
         agentId: event.agentId,
         kind: "artifact",
         summary: `artifact: ${artifact.name}`,
-        payload: { artifact, eventSummary: event.summary },
+        payload: {
+          ...(event.payload ?? {}),
+          artifact,
+          eventSummary: event.summary,
+        },
       }));
     }
 
