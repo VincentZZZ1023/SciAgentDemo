@@ -52,3 +52,15 @@ class ArtifactTable(SQLModel, table=True):
     content_type: str
     path: str
     created_at: int = Field(index=True)
+
+
+class MessageTable(SQLModel, table=True):
+    __tablename__ = "messages"
+
+    message_id: str = Field(primary_key=True, index=True)
+    topic_id: str = Field(foreign_key="topics.id", index=True)
+    run_id: str | None = Field(default=None, index=True)
+    agent_id: str = Field(index=True)
+    role: str = Field(index=True)
+    content: str
+    ts: int = Field(index=True)

@@ -5,7 +5,7 @@
 当前进度：
 
 - Step 1 已完成：契约与工程骨架（`shared/schema`）
-- Step 2 已完成：FastAPI 后端（真 REST、真 WebSocket、SQLite 持久化、假 runner）
+- Step 2 已完成：FastAPI 后端（真 REST、真 WebSocket、SQLite 持久化、可接入 DeepSeek 的 runner）
 - Step 3 已完成：React 前端（Vite + TypeScript）与后端真接口联调
 
 ## 目录结构
@@ -74,6 +74,7 @@ npm run dev
 .\dev-up.ps1 -Stop             # 停止由 dev-up 启动的前后端进程
 .\dev-up.ps1 -ForceCleanPorts  # 强制释放 8000/5173 端口占用后再启动
 .\dev-up.ps1 -ReadyTimeoutSec 45  # 设置启动就绪检测超时（秒）
+.\dev-up.ps1 -RequireDeepSeek  # 未配置 DEEPSEEK_API_KEY 时直接报错退出
 ```
 
 也可以直接双击：

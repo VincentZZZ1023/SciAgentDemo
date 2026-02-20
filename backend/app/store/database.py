@@ -4,7 +4,6 @@ import asyncio
 import json
 import shutil
 import time
-from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -14,7 +13,7 @@ from sqlalchemy import desc
 from sqlmodel import SQLModel, Session, create_engine, delete, select
 
 from app.core.config import BACKEND_DIR, get_settings
-from app.models.db_models import ArtifactTable, EventTable, RunTable, TopicTable
+from app.models.db_models import ArtifactTable, EventTable, MessageTable, RunTable, TopicTable
 from app.models.schemas import AgentId, ArtifactRef, Event, EventKind, MessageRole, TraceItemKind
 
 AGENT_ORDER = [AgentId.review, AgentId.ideation, AgentId.experiment]
@@ -78,10 +77,6 @@ def init_db() -> None:
 class DatabaseStore:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._messages_lock = asyncio.Lock()
-        self._messages: dict[str, dict[str, list[dict]]] = defaultdict(
-            lambda: defaultdict(list)
-        )
         self._artifacts_root = ARTIFACTS_ROOT
 
     def _resolve_trace_run_id(self, session: Session, topic_id: str) -> str | None:
@@ -154,7 +149,10 @@ class DatabaseStore:
         return {
             "artifactId": artifact.artifact_id,
             "name": artifact.name,
-            "uri": f"/api/topics/{artifact.topic_id}/artifacts/{quote(artifact.name)}",
+            "uri": (
+                f"/api/topics/{artifact.topic_id}/artifacts/{quote(artifact.name)}"
+                f"?artifactId={quote(artifact.artifact_id)}"
+            ),
             "contentType": artifact.content_type,
         }
 
@@ -494,7 +492,7 @@ class DatabaseStore:
         return ArtifactRef(
             artifactId=artifact_key,
             name=safe_name,
-            uri=f"/api/topics/{topic_id}/artifacts/{quote(safe_name)}",
+            uri=f"/api/topics/{topic_id}/artifacts/{quote(safe_name)}?artifactId={quote(artifact_key)}",
             contentType=content_type,
         )
 
@@ -533,18 +531,23 @@ class DatabaseStore:
                 "artifacts": [self._artifact_to_payload(row) for row in artifacts_rows],
             }
 
-    async def get_artifact_file(self, topic_id: str, name: str) -> dict:
+    async def get_artifact_file(
+        self,
+        topic_id: str,
+        name: str,
+        *,
+        artifact_id: str | None = None,
+    ) -> dict:
         safe_name = Path(name).name
 
         with Session(ENGINE) as session:
+            statement = select(ArtifactTable).where(ArtifactTable.topic_id == topic_id)
+            if artifact_id:
+                statement = statement.where(ArtifactTable.artifact_id == artifact_id)
+            else:
+                statement = statement.where(ArtifactTable.name == safe_name)
             artifact = session.exec(
-                select(ArtifactTable)
-                .where(
-                    ArtifactTable.topic_id == topic_id,
-                    ArtifactTable.name == safe_name,
-                )
-                .order_by(desc(ArtifactTable.created_at))
-                .limit(1)
+                statement.order_by(desc(ArtifactTable.created_at)).limit(1)
             ).first()
 
             if artifact is None:
@@ -569,12 +572,10 @@ class DatabaseStore:
 
                 session.exec(delete(EventTable).where(EventTable.topic_id == topic_id))
                 session.exec(delete(ArtifactTable).where(ArtifactTable.topic_id == topic_id))
+                session.exec(delete(MessageTable).where(MessageTable.topic_id == topic_id))
                 session.exec(delete(RunTable).where(RunTable.topic_id == topic_id))
                 session.delete(topic)
                 session.commit()
-
-        async with self._messages_lock:
-            self._messages.pop(topic_id, None)
 
         artifact_dir = self._artifacts_root / topic_id
         if artifact_dir.exists():
@@ -585,11 +586,28 @@ class DatabaseStore:
         if topic is None:
             raise KeyError(topic_id)
 
-        async with self._messages_lock:
-            items = [item.copy() for item in self._messages.get(topic_id, {}).get(agent_id.value, [])]
+        with Session(ENGINE) as session:
+            rows = session.exec(
+                select(MessageTable)
+                .where(
+                    MessageTable.topic_id == topic_id,
+                    MessageTable.agent_id == agent_id.value,
+                )
+                .order_by(MessageTable.ts)
+            ).all()
 
-        items.sort(key=lambda item: item["ts"])
-        return items
+        return [
+            {
+                "messageId": row.message_id,
+                "topicId": row.topic_id,
+                "runId": row.run_id,
+                "agentId": row.agent_id,
+                "role": row.role,
+                "content": row.content,
+                "ts": row.ts,
+            }
+            for row in rows
+        ]
 
     async def create_message(
         self,
@@ -604,20 +622,33 @@ class DatabaseStore:
         if topic is None:
             raise KeyError(topic_id)
 
-        message = {
-            "messageId": str(uuid4()),
+        message_id = str(uuid4())
+        timestamp = now_ms()
+
+        async with self._lock:
+            with Session(ENGINE) as session:
+                session.add(
+                    MessageTable(
+                        message_id=message_id,
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=agent_id.value,
+                        role=role.value,
+                        content=content,
+                        ts=timestamp,
+                    )
+                )
+                session.commit()
+
+        return {
+            "messageId": message_id,
             "topicId": topic_id,
             "runId": run_id,
             "agentId": agent_id.value,
             "role": role.value,
             "content": content,
-            "ts": now_ms(),
+            "ts": timestamp,
         }
-
-        async with self._messages_lock:
-            self._messages[topic_id][agent_id.value].append(message)
-
-        return message.copy()
 
     async def get_trace(self, topic_id: str, *, run_id: str | None = None) -> dict:
         with Session(ENGINE) as session:
@@ -642,6 +673,11 @@ class DatabaseStore:
             if selected_run_id:
                 artifact_statement = artifact_statement.where(ArtifactTable.run_id == selected_run_id)
             artifact_rows = session.exec(artifact_statement.order_by(ArtifactTable.created_at)).all()
+
+            message_statement = select(MessageTable).where(MessageTable.topic_id == topic_id)
+            if selected_run_id:
+                message_statement = message_statement.where(MessageTable.run_id == selected_run_id)
+            message_rows = session.exec(message_statement.order_by(MessageTable.ts)).all()
 
         timeline_items: list[dict] = []
         message_ids: set[str] = set()
@@ -765,39 +801,32 @@ class DatabaseStore:
                     }
                 )
 
-        async with self._messages_lock:
-            topic_messages = self._messages.get(topic_id, {})
-            for agent_messages in topic_messages.values():
-                for message in agent_messages:
-                    message_run_id = message.get("runId")
-                    if selected_run_id and message_run_id != selected_run_id:
-                        continue
+        for row in message_rows:
+            if row.message_id in message_ids:
+                continue
+            if row.agent_id not in AgentId._value2member_map_:
+                continue
 
-                    message_id = message.get("messageId")
-                    if not isinstance(message_id, str) or not message_id or message_id in message_ids:
-                        continue
-
-                    role = message.get("role") if isinstance(message.get("role"), str) else "assistant"
-                    content = message.get("content") if isinstance(message.get("content"), str) else ""
-                    if not content:
-                        continue
-
-                    ts = message.get("ts") if isinstance(message.get("ts"), int) else now_ms()
-                    agent_id = message.get("agentId")
-                    if not isinstance(agent_id, str) or agent_id not in AgentId._value2member_map_:
-                        continue
-
-                    timeline_items.append(
-                        {
-                            "id": f"msg-{message_id}",
-                            "ts": ts,
-                            "agentId": agent_id,
-                            "kind": TraceItemKind.message.value,
-                            "summary": f"{role}: {content[:120]}",
-                            "payload": {"message": message},
-                        }
-                    )
-                    message_ids.add(message_id)
+            message_payload = {
+                "messageId": row.message_id,
+                "topicId": row.topic_id,
+                "runId": row.run_id,
+                "agentId": row.agent_id,
+                "role": row.role,
+                "content": row.content,
+                "ts": row.ts,
+            }
+            timeline_items.append(
+                {
+                    "id": f"msg-{row.message_id}",
+                    "ts": row.ts,
+                    "agentId": row.agent_id,
+                    "kind": TraceItemKind.message.value,
+                    "summary": f"{row.role}: {row.content[:120]}",
+                    "payload": {"message": message_payload},
+                }
+            )
+            message_ids.add(row.message_id)
 
         for artifact_row in artifact_rows:
             if artifact_row.artifact_id in artifact_ids:

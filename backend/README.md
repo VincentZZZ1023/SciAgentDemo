@@ -10,6 +10,10 @@
 JWT_SECRET=your-secret
 ACCESS_TOKEN_EXPIRE_MINUTES=60
 DATABASE_URL=sqlite:///./data.db
+DEEPSEEK_API_KEY=your-deepseek-key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_TIMEOUT_SECONDS=45
 ```
 
 说明：
@@ -18,6 +22,8 @@ DATABASE_URL=sqlite:///./data.db
 - 生产环境必须显式配置强随机 `JWT_SECRET`。
 - 默认 SQLite 文件会生成在 `backend/data.db`。
 - artifact 文件会写入 `backend/data/artifacts/{topicId}/{runId}/`。
+- 配置 `DEEPSEEK_API_KEY` 后，runner 会在 review/ideation/experiment/feedback 步骤真实调用 DeepSeek。
+- 未配置 `DEEPSEEK_API_KEY` 时，runner 会自动降级到 fallback 模板并发出 `warn` 事件，不阻塞联调。
 
 ## 安装依赖
 

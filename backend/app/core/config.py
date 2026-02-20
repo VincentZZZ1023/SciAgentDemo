@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     artifacts_root: str = "data/artifacts"
 
     deepseek_api_key: str | None = None
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-chat"
+    deepseek_timeout_seconds: float = 120.0
+    deepseek_max_retries: int = 1
+    deepseek_retry_backoff_seconds: float = 1.5
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 

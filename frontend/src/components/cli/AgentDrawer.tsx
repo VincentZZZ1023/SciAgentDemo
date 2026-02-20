@@ -33,15 +33,21 @@ const getErrorMessage = (error: unknown): string => {
   return "Request failed";
 };
 
-const findLatestArtifact = (artifacts: Artifact[], keyword: string): Artifact | null => {
-  const lowered = keyword.toLowerCase();
-  for (let index = artifacts.length - 1; index >= 0; index -= 1) {
-    const item = artifacts[index];
-    if (item.name.toLowerCase().includes(lowered)) {
-      return item;
-    }
+interface AgentArtifactRecord {
+  artifact: Artifact;
+  ts: number;
+  source: "event" | "snapshot";
+}
+
+const inferArtifactAgent = (artifact: Artifact): AgentId => {
+  const lowered = artifact.name.toLowerCase();
+  if (lowered.includes("survey")) {
+    return "review";
   }
-  return null;
+  if (lowered.includes("idea")) {
+    return "ideation";
+  }
+  return "experiment";
 };
 
 const formatArtifactContent = (contentType: string, raw: string): string => {
@@ -118,16 +124,68 @@ export const AgentDrawer = ({
     };
   }, []);
 
+  const topicEvents = useMemo(() => {
+    return events
+      .filter((event) => event.topicId === topicId)
+      .sort((a, b) => b.ts - a.ts);
+  }, [events, topicId]);
+
   const agentEvents = useMemo(() => {
     if (!agentId) {
       return [];
     }
-    return events.filter((event) => event.agentId === agentId).sort((a, b) => b.ts - a.ts);
-  }, [agentId, events]);
+    return topicEvents.filter((event) => event.agentId === agentId);
+  }, [agentId, topicEvents]);
 
-  const survey = useMemo(() => findLatestArtifact(artifacts, "survey"), [artifacts]);
-  const idea = useMemo(() => findLatestArtifact(artifacts, "idea"), [artifacts]);
-  const results = useMemo(() => findLatestArtifact(artifacts, "result"), [artifacts]);
+  const agentArtifacts = useMemo<AgentArtifactRecord[]>(() => {
+    if (!agentId) {
+      return [];
+    }
+
+    const map = new Map<string, AgentArtifactRecord>();
+
+    for (const event of topicEvents) {
+      if (
+        event.kind !== "artifact_created" ||
+        event.agentId !== agentId ||
+        !Array.isArray(event.artifacts)
+      ) {
+        continue;
+      }
+
+      for (const artifact of event.artifacts) {
+        map.set(artifact.artifactId, {
+          artifact,
+          ts: event.ts,
+          source: "event",
+        });
+      }
+    }
+
+    // Fallback for older snapshots that may not include artifact_created events in memory.
+    for (const artifact of artifacts) {
+      if (inferArtifactAgent(artifact) !== agentId) {
+        continue;
+      }
+      if (map.has(artifact.artifactId)) {
+        continue;
+      }
+      map.set(artifact.artifactId, {
+        artifact,
+        ts: 0,
+        source: "snapshot",
+      });
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.ts - a.ts);
+  }, [agentId, artifacts, topicEvents]);
+
+  const latestUserNotes = useMemo(() => {
+    return chatMessages
+      .filter((message) => message.role === "user")
+      .slice(-3)
+      .reverse();
+  }, [chatMessages]);
 
   const renderedArtifactContent = useMemo(
     () => formatArtifactContent(artifactContentType, artifactContent),
@@ -349,17 +407,24 @@ export const AgentDrawer = ({
 
           {activeTab === "artifacts" ? (
             <div className="drawer-list">
-              {artifacts.length === 0 ? <p className="muted">No artifacts yet</p> : null}
-              {artifacts.map((artifact) => (
+              {agentArtifacts.length === 0 ? (
+                <p className="muted">No artifacts for this agent yet</p>
+              ) : null}
+              {agentArtifacts.map((record) => (
                 <button
                   type="button"
-                  key={artifact.artifactId}
+                  key={record.artifact.artifactId}
                   className="artifact-item artifact-item-button"
-                  onClick={() => void handleOpenArtifact(artifact)}
+                  onClick={() => void handleOpenArtifact(record.artifact)}
                 >
-                  <strong>{artifact.name}</strong>
-                  <span>{artifact.contentType}</span>
-                  <code>{artifact.uri}</code>
+                  <strong>{record.artifact.name}</strong>
+                  <span>{record.artifact.contentType}</span>
+                  <span className="muted">
+                    {record.ts > 0
+                      ? new Date(record.ts).toLocaleString()
+                      : "time unavailable (snapshot)"}
+                  </span>
+                  <code>{record.artifact.uri}</code>
                 </button>
               ))}
             </div>
@@ -371,14 +436,33 @@ export const AgentDrawer = ({
               <p>{topic?.title ?? "Unknown topic"}</p>
               <p className="muted">{topic?.description || "N/A"}</p>
 
-              <h4>Recent Survey</h4>
-              <p>{survey ? survey.name : "N/A"}</p>
+              <h4>Latest Agent Activity</h4>
+              {agentEvents.length === 0 ? <p className="muted">No recent events</p> : null}
+              {agentEvents.slice(0, 3).map((event) => (
+                <p key={event.eventId}>
+                  <strong>{new Date(event.ts).toLocaleTimeString()}:</strong> {event.summary}
+                </p>
+              ))}
 
-              <h4>Recent Idea</h4>
-              <p>{idea ? idea.name : "N/A"}</p>
+              <h4>Recent Artifacts ({agentId})</h4>
+              {agentArtifacts.length === 0 ? <p className="muted">No artifacts</p> : null}
+              {agentArtifacts.slice(0, 3).map((record) => (
+                <p key={record.artifact.artifactId}>
+                  <strong>{record.artifact.name}</strong>
+                  <span className="muted">
+                    {" "}
+                    {record.ts > 0
+                      ? `(${new Date(record.ts).toLocaleTimeString()})`
+                      : "(snapshot)"}
+                  </span>
+                </p>
+              ))}
 
-              <h4>Recent Results</h4>
-              <p>{results ? results.name : "N/A"}</p>
+              <h4>Recent User Constraints</h4>
+              {latestUserNotes.length === 0 ? <p className="muted">No user notes yet</p> : null}
+              {latestUserNotes.map((message) => (
+                <p key={message.messageId}>{message.content}</p>
+              ))}
             </div>
           ) : null}
 

@@ -52,10 +52,11 @@ async def delete_topic(topicId: str, _user: str = Depends(get_current_user)) -> 
 async def get_artifact_content(
     topicId: str,
     name: str,
+    artifactId: str | None = Query(default=None),
     _user: str = Depends(get_current_user),
 ) -> FileResponse:
     try:
-        artifact = await store.get_artifact_file(topicId, name)
+        artifact = await store.get_artifact_file(topicId, name, artifact_id=artifactId)
     except (KeyError, FileNotFoundError) as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found") from exc
 
