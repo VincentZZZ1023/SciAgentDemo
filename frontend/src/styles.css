@@ -96,6 +96,15 @@ textarea {
   font: inherit;
 }
 
+select {
+  font: inherit;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  padding: 8px 10px;
+}
+
 button {
   cursor: pointer;
   border: 1px solid var(--border);
@@ -393,6 +402,35 @@ p {
   gap: 12px;
 }
 
+.topic-view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topic-view-tabs button.active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary-soft) 60%, var(--panel));
+}
+
+.trace-run-id {
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.topic-trace-panel {
+  min-height: 0;
+  height: calc(100vh - 190px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
 .topic-flow-panel,
 .topic-feed-panel {
   min-height: 0;
@@ -486,6 +524,74 @@ p {
   height: 100%;
   display: grid;
   grid-template-rows: auto 1fr;
+}
+
+.trace-timeline {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+}
+
+.trace-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.trace-filters {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-soft);
+}
+
+.trace-filters label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.trace-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.trace-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-soft);
+  padding: 9px;
+  display: grid;
+  gap: 7px;
+}
+
+.trace-item header {
+  display: flex;
+  justify-content: space-between;
+}
+
+.trace-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.trace-message,
+.trace-artifact {
+  display: grid;
+  gap: 6px;
+}
+
+.trace-link-button {
+  justify-self: start;
+  padding: 4px 8px;
+  font-size: 12px;
 }
 
 .panel-header {
@@ -816,6 +922,11 @@ p {
     height: auto;
     min-height: 400px;
     grid-template-columns: 1fr;
+  }
+
+  .topic-trace-panel {
+    height: auto;
+    min-height: 400px;
   }
 
   .topic-flow-panel {

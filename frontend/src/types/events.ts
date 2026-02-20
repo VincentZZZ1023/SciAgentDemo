@@ -82,6 +82,24 @@ export interface SnapshotResponse {
   artifacts: Artifact[];
 }
 
+export const TRACE_ITEM_KINDS = ["message", "artifact", "status", "event"] as const;
+export type TraceItemKind = (typeof TRACE_ITEM_KINDS)[number];
+
+export interface TraceItem {
+  id: string;
+  ts: number;
+  agentId: AgentId;
+  kind: TraceItemKind;
+  summary: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface TraceResponse {
+  topicId: string;
+  runId?: string | null;
+  items: TraceItem[];
+}
+
 const agentSet = new Set<string>(AGENT_IDS);
 const eventKindSet = new Set<string>(EVENT_KINDS);
 const severitySet = new Set<string>(SEVERITIES);
@@ -218,4 +236,76 @@ export const parseMessageFromEvent = (event: Event): Message | null => {
   }
 
   return event.payload.message;
+};
+
+export const mapEventToTraceItems = (event: Event): TraceItem[] => {
+  if (event.kind === "message_created") {
+    const message = parseMessageFromEvent(event);
+    if (!message) {
+      return [];
+    }
+
+    return [
+      {
+        id: `msg-${message.messageId}`,
+        ts: message.ts,
+        agentId: message.agentId,
+        kind: "message",
+        summary: `${message.role}: ${message.content.slice(0, 120)}`,
+        payload: { message },
+      },
+    ];
+  }
+
+  if (event.kind === "artifact_created") {
+    if (Array.isArray(event.artifacts) && event.artifacts.length > 0) {
+      return event.artifacts.map((artifact, index) => ({
+        id: `artifact-${artifact.artifactId || `${event.eventId}-${index}`}`,
+        ts: event.ts,
+        agentId: event.agentId,
+        kind: "artifact",
+        summary: `artifact: ${artifact.name}`,
+        payload: { artifact, eventSummary: event.summary },
+      }));
+    }
+
+    return [
+      {
+        id: `artifact-${event.eventId}`,
+        ts: event.ts,
+        agentId: event.agentId,
+        kind: "artifact",
+        summary: event.summary,
+        payload: event.payload,
+      },
+    ];
+  }
+
+  if (event.kind === "agent_status_updated") {
+    return [
+      {
+        id: `status-${event.eventId}`,
+        ts: event.ts,
+        agentId: event.agentId,
+        kind: "status",
+        summary: event.summary,
+        payload: event.payload,
+      },
+    ];
+  }
+
+  if (event.kind === "event_emitted") {
+    return [
+      {
+        id: `event-${event.eventId}`,
+        ts: event.ts,
+        agentId: event.agentId,
+        kind: "event",
+        summary: event.summary,
+        payload: event.payload,
+      },
+    ];
+  }
+
+  return [];
 };

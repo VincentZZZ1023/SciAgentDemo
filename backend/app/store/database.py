@@ -15,7 +15,7 @@ from sqlmodel import SQLModel, Session, create_engine, delete, select
 
 from app.core.config import BACKEND_DIR, get_settings
 from app.models.db_models import ArtifactTable, EventTable, RunTable, TopicTable
-from app.models.schemas import AgentId, ArtifactRef, Event, EventKind, MessageRole
+from app.models.schemas import AgentId, ArtifactRef, Event, EventKind, MessageRole, TraceItemKind
 
 AGENT_ORDER = [AgentId.review, AgentId.ideation, AgentId.experiment]
 
@@ -83,6 +83,27 @@ class DatabaseStore:
             lambda: defaultdict(list)
         )
         self._artifacts_root = ARTIFACTS_ROOT
+
+    def _resolve_trace_run_id(self, session: Session, topic_id: str) -> str | None:
+        active_run_id = session.exec(
+            select(RunTable.id)
+            .where(
+                RunTable.topic_id == topic_id,
+                RunTable.status.in_(["queued", "running"]),
+            )
+            .order_by(desc(RunTable.started_at))
+            .limit(1)
+        ).first()
+        if active_run_id:
+            return active_run_id
+
+        latest_run_id = session.exec(
+            select(RunTable.id)
+            .where(RunTable.topic_id == topic_id)
+            .order_by(desc(RunTable.started_at))
+            .limit(1)
+        ).first()
+        return latest_run_id
 
     def _resolve_topic_runs(self, session: Session, topic_id: str) -> tuple[str | None, str | None]:
         last_run_id = session.exec(
@@ -597,6 +618,208 @@ class DatabaseStore:
             self._messages[topic_id][agent_id.value].append(message)
 
         return message.copy()
+
+    async def get_trace(self, topic_id: str, *, run_id: str | None = None) -> dict:
+        with Session(ENGINE) as session:
+            topic = session.get(TopicTable, topic_id)
+            if topic is None:
+                raise KeyError(topic_id)
+
+            selected_run_id = run_id
+            if selected_run_id:
+                run = session.get(RunTable, selected_run_id)
+                if run is None or run.topic_id != topic_id:
+                    raise ValueError("Run not found")
+            else:
+                selected_run_id = self._resolve_trace_run_id(session, topic_id)
+
+            event_statement = select(EventTable).where(EventTable.topic_id == topic_id)
+            if selected_run_id:
+                event_statement = event_statement.where(EventTable.run_id == selected_run_id)
+            event_rows = session.exec(event_statement.order_by(EventTable.ts)).all()
+
+            artifact_statement = select(ArtifactTable).where(ArtifactTable.topic_id == topic_id)
+            if selected_run_id:
+                artifact_statement = artifact_statement.where(ArtifactTable.run_id == selected_run_id)
+            artifact_rows = session.exec(artifact_statement.order_by(ArtifactTable.created_at)).all()
+
+        timeline_items: list[dict] = []
+        message_ids: set[str] = set()
+        artifact_ids: set[str] = set()
+
+        for row in event_rows:
+            payload_raw = _json_loads(row.payload_json)
+            payload = payload_raw if isinstance(payload_raw, dict) else {}
+            artifacts_raw = _json_loads(row.artifacts_json)
+            artifacts = artifacts_raw if isinstance(artifacts_raw, list) else []
+
+            if row.kind == EventKind.message_created.value:
+                message = payload.get("message") if isinstance(payload, dict) else None
+                if not isinstance(message, dict):
+                    continue
+
+                message_id = message.get("messageId")
+                if not isinstance(message_id, str) or not message_id:
+                    continue
+                if message_id in message_ids:
+                    continue
+
+                message_ts = message.get("ts")
+                ts = message_ts if isinstance(message_ts, int) else row.ts
+
+                message_agent_id = message.get("agentId")
+                agent_id = (
+                    message_agent_id
+                    if isinstance(message_agent_id, str) and message_agent_id in AgentId._value2member_map_
+                    else row.agent_id
+                )
+
+                role = message.get("role") if isinstance(message.get("role"), str) else "assistant"
+                content = message.get("content") if isinstance(message.get("content"), str) else row.summary
+                summary = f"{role}: {content[:120]}"
+
+                timeline_items.append(
+                    {
+                        "id": f"msg-{message_id}",
+                        "ts": ts,
+                        "agentId": agent_id,
+                        "kind": TraceItemKind.message.value,
+                        "summary": summary,
+                        "payload": {"message": message},
+                    }
+                )
+                message_ids.add(message_id)
+                continue
+
+            if row.kind == EventKind.artifact_created.value:
+                appended = False
+                for index, artifact in enumerate(artifacts):
+                    if not isinstance(artifact, dict):
+                        continue
+                    artifact_id = artifact.get("artifactId")
+                    if not isinstance(artifact_id, str) or not artifact_id:
+                        artifact_id = f"{row.event_id}-{index}"
+                    if artifact_id in artifact_ids:
+                        continue
+
+                    name = artifact.get("name") if isinstance(artifact.get("name"), str) else "artifact"
+                    timeline_items.append(
+                        {
+                            "id": f"artifact-{artifact_id}",
+                            "ts": row.ts,
+                            "agentId": row.agent_id,
+                            "kind": TraceItemKind.artifact.value,
+                            "summary": f"artifact: {name}",
+                            "payload": {"artifact": artifact},
+                        }
+                    )
+                    artifact_ids.add(artifact_id)
+                    appended = True
+
+                if not appended:
+                    timeline_items.append(
+                        {
+                            "id": f"artifact-{row.event_id}",
+                            "ts": row.ts,
+                            "agentId": row.agent_id,
+                            "kind": TraceItemKind.artifact.value,
+                            "summary": row.summary,
+                            "payload": payload or None,
+                        }
+                    )
+                continue
+
+            if row.kind == EventKind.agent_status_updated.value:
+                status_payload = payload if isinstance(payload, dict) else {}
+                timeline_items.append(
+                    {
+                        "id": f"status-{row.event_id}",
+                        "ts": row.ts,
+                        "agentId": row.agent_id,
+                        "kind": TraceItemKind.status.value,
+                        "summary": row.summary,
+                        "payload": status_payload or None,
+                    }
+                )
+                continue
+
+            if row.kind == EventKind.event_emitted.value:
+                timeline_items.append(
+                    {
+                        "id": f"event-{row.event_id}",
+                        "ts": row.ts,
+                        "agentId": row.agent_id,
+                        "kind": TraceItemKind.event.value,
+                        "summary": row.summary,
+                        "payload": payload or None,
+                    }
+                )
+
+        async with self._messages_lock:
+            topic_messages = self._messages.get(topic_id, {})
+            for agent_messages in topic_messages.values():
+                for message in agent_messages:
+                    message_run_id = message.get("runId")
+                    if selected_run_id and message_run_id != selected_run_id:
+                        continue
+
+                    message_id = message.get("messageId")
+                    if not isinstance(message_id, str) or not message_id or message_id in message_ids:
+                        continue
+
+                    role = message.get("role") if isinstance(message.get("role"), str) else "assistant"
+                    content = message.get("content") if isinstance(message.get("content"), str) else ""
+                    if not content:
+                        continue
+
+                    ts = message.get("ts") if isinstance(message.get("ts"), int) else now_ms()
+                    agent_id = message.get("agentId")
+                    if not isinstance(agent_id, str) or agent_id not in AgentId._value2member_map_:
+                        continue
+
+                    timeline_items.append(
+                        {
+                            "id": f"msg-{message_id}",
+                            "ts": ts,
+                            "agentId": agent_id,
+                            "kind": TraceItemKind.message.value,
+                            "summary": f"{role}: {content[:120]}",
+                            "payload": {"message": message},
+                        }
+                    )
+                    message_ids.add(message_id)
+
+        for artifact_row in artifact_rows:
+            if artifact_row.artifact_id in artifact_ids:
+                continue
+
+            payload = self._artifact_to_payload(artifact_row)
+            inferred_agent: AgentId = AgentId.ideation
+            lowered = artifact_row.name.lower()
+            if "survey" in lowered:
+                inferred_agent = AgentId.review
+            elif "result" in lowered:
+                inferred_agent = AgentId.experiment
+
+            timeline_items.append(
+                {
+                    "id": f"artifact-{artifact_row.artifact_id}",
+                    "ts": artifact_row.created_at,
+                    "agentId": inferred_agent.value,
+                    "kind": TraceItemKind.artifact.value,
+                    "summary": f"artifact: {artifact_row.name}",
+                    "payload": {"artifact": payload},
+                }
+            )
+            artifact_ids.add(artifact_row.artifact_id)
+
+        timeline_items.sort(key=lambda item: item["ts"])
+
+        return {
+            "topicId": topic_id,
+            "runId": selected_run_id,
+            "items": timeline_items,
+        }
 
 
 store = DatabaseStore()

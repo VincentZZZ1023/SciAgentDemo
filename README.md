@@ -72,6 +72,8 @@ npm run dev
 .\dev-up.ps1 -OpenBrowser      # 启动后自动打开前端页面
 .\dev-up.ps1 -Restart          # 先停止旧进程，再重新启动
 .\dev-up.ps1 -Stop             # 停止由 dev-up 启动的前后端进程
+.\dev-up.ps1 -ForceCleanPorts  # 强制释放 8000/5173 端口占用后再启动
+.\dev-up.ps1 -ReadyTimeoutSec 45  # 设置启动就绪检测超时（秒）
 ```
 
 也可以直接双击：

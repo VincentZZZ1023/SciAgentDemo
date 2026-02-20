@@ -83,6 +83,28 @@ class MessageCreateRequest(BaseModel):
         return self
 
 
+class TraceItemKind(str, Enum):
+    message = "message"
+    artifact = "artifact"
+    status = "status"
+    event = "event"
+
+
+class TraceItem(BaseModel):
+    id: str = Field(min_length=1)
+    ts: int = Field(ge=0)
+    agentId: AgentId
+    kind: TraceItemKind
+    summary: str = Field(min_length=1)
+    payload: dict[str, Any] | None = None
+
+
+class TraceResponse(BaseModel):
+    topicId: str
+    runId: str | None = None
+    items: list[TraceItem] = Field(default_factory=list)
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str

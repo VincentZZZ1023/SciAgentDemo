@@ -351,6 +351,66 @@
 }
 ```
 
+### 2.9 `GET /api/topics/{topicId}/trace`
+
+用途：获取 Topic 级 Trace Timeline（按时间顺序聚合 message/artifact/status/event）。
+
+请求头：
+
+- `Authorization: Bearer <access_token>`
+
+路径参数：
+
+- `topicId: string`
+
+查询参数：
+
+- `runId: string`，可选；未传时服务端优先选择 active run，否则选择最近一次 run。
+
+成功响应 `200`：
+
+```json
+{
+  "topicId": "topic-neural-symbolic-discovery",
+  "runId": "run-20260219-002",
+  "items": [
+    {
+      "id": "msg-cb88d4f6-b5fd-4aef-a725-4f54a2d0d09f",
+      "ts": 1771465000300,
+      "agentId": "ideation",
+      "kind": "message",
+      "summary": "user: 请总结实验结果并提出下一轮改进方向",
+      "payload": {
+        "message": {
+          "messageId": "cb88d4f6-b5fd-4aef-a725-4f54a2d0d09f",
+          "topicId": "topic-neural-symbolic-discovery",
+          "runId": "run-20260219-002",
+          "agentId": "ideation",
+          "role": "user",
+          "content": "请总结实验结果并提出下一轮改进方向",
+          "ts": 1771465000300
+        }
+      }
+    },
+    {
+      "id": "artifact-art-results-001",
+      "ts": 1771465040000,
+      "agentId": "experiment",
+      "kind": "artifact",
+      "summary": "artifact: results.json",
+      "payload": {
+        "artifact": {
+          "artifactId": "art-results-001",
+          "name": "results.json",
+          "uri": "/api/topics/topic-neural-symbolic-discovery/artifacts/results.json",
+          "contentType": "application/json"
+        }
+      }
+    }
+  ]
+}
+```
+
 ## 3. WebSocket 契约
 
 ### 3.1 `WS /api/ws?topicId=...`

@@ -2,6 +2,7 @@ import type {
   AgentId,
   Message,
   SnapshotResponse,
+  TraceResponse,
   TopicDetail,
   TopicSummary,
 } from "../types/events";
@@ -295,4 +296,11 @@ export const postAgentMessage = async (
     },
   );
   return response.messages;
+};
+
+export const getTopicTrace = async (topicId: string, runId?: string): Promise<TraceResponse> => {
+  const query = runId ? `?runId=${encodeURIComponent(runId)}` : "";
+  return apiFetch<TraceResponse>(`/api/topics/${topicId}/trace${query}`, {
+    method: "GET",
+  });
 };

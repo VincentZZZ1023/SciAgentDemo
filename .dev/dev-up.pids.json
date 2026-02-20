@@ -1,5 +1,7 @@
 ﻿{
-    "frontendPid":  120160,
-    "backendPid":  127716,
-    "updatedAt":  "2026-02-20T02:39:38.7477190Z"
+    "frontendPid":  118220,
+    "updatedAt":  "2026-02-20T02:58:10.4555575Z",
+    "backendPid":  128488,
+    "backendPort":  8000,
+    "frontendPort":  5173
 }

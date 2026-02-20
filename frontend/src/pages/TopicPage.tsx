@@ -1,19 +1,22 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext, useParams } from "react-router-dom";
-import { getSnapshot, sendAgentCommand, startRun } from "../api/client";
+import { getSnapshot, getTopicTrace, sendAgentCommand, startRun } from "../api/client";
 import { connectTopicWs, type TopicWsConnection, type WsStatus } from "../api/ws";
 import type { AppLayoutContext } from "../app/AppLayout";
 import { AgentDrawer } from "../components/cli/AgentDrawer";
 import { EventFeed } from "../components/feed/EventFeed";
 import { FlowCanvas } from "../components/flow/FlowCanvas";
+import { TraceTimeline } from "../components/trace/TraceTimeline";
 import { ThemeToggle } from "../components/ThemeToggle";
 import {
   AGENT_IDS,
+  mapEventToTraceItems,
   parseWsEvent,
   type AgentId,
   type AgentStatus,
   type Artifact,
   type Event,
+  type TraceItem,
   type TopicDetail,
 } from "../types/events";
 
@@ -68,6 +71,20 @@ const mergeArtifacts = (current: Artifact[], incoming: Artifact[]): Artifact[] =
   return Array.from(map.values());
 };
 
+const mergeTraceItems = (current: TraceItem[], incoming: TraceItem[]): TraceItem[] => {
+  const map = new Map<string, TraceItem>();
+
+  for (const item of current) {
+    map.set(item.id, item);
+  }
+
+  for (const item of incoming) {
+    map.set(item.id, item);
+  }
+
+  return Array.from(map.values()).sort((a, b) => a.ts - b.ts);
+};
+
 const normalizeEvents = (rawEvents: unknown[]): Event[] => {
   const parsedEvents: Event[] = [];
   for (const item of rawEvents) {
@@ -84,6 +101,7 @@ export const TopicPage = () => {
   const { topics, refreshTopics } = useOutletContext<AppLayoutContext>();
 
   const wsRef = useRef<TopicWsConnection | null>(null);
+  const traceRunIdRef = useRef<string | null>(null);
 
   const [topic, setTopic] = useState<TopicDetail | null>(null);
   const [agentsStatus, setAgentsStatus] = useState<Record<AgentId, AgentStatus>>(
@@ -92,10 +110,16 @@ export const TopicPage = () => {
   const [events, setEvents] = useState<Event[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
 
+  const [traceItems, setTraceItems] = useState<TraceItem[]>([]);
+  const [traceRunId, setTraceRunId] = useState<string | null>(null);
+  const [loadingTrace, setLoadingTrace] = useState(false);
+  const [traceError, setTraceError] = useState("");
+
   const [loadingSnapshot, setLoadingSnapshot] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
   const [wsStatus, setWsStatus] = useState<WsStatus>("closed");
+  const [viewMode, setViewMode] = useState<"pipeline" | "trace">("pipeline");
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<AgentId | null>(null);
@@ -154,10 +178,18 @@ export const TopicPage = () => {
   }, []);
 
   useEffect(() => {
+    traceRunIdRef.current = traceRunId;
+  }, [traceRunId]);
+
+  useEffect(() => {
     if (!topicId) {
       setTopic(null);
       setEvents([]);
       setArtifacts([]);
+      setTraceItems([]);
+      setTraceRunId(null);
+      setLoadingTrace(false);
+      setTraceError("");
       setAgentsStatus(createDefaultAgentRecord());
       return;
     }
@@ -168,11 +200,16 @@ export const TopicPage = () => {
     wsRef.current = null;
 
     setLoadingSnapshot(true);
+    setLoadingTrace(true);
     setError("");
+    setTraceError("");
     setWsStatus("connecting");
+    setViewMode("pipeline");
     setTopic(null);
     setEvents([]);
     setArtifacts([]);
+    setTraceItems([]);
+    setTraceRunId(null);
     setAgentsStatus(createDefaultAgentRecord());
 
     const bootstrap = async () => {
@@ -190,11 +227,29 @@ export const TopicPage = () => {
         if (!cancelled) {
           setError(getErrorMessage(snapshotError));
           setWsStatus("closed");
+          setLoadingTrace(false);
         }
         return;
       } finally {
         if (!cancelled) {
           setLoadingSnapshot(false);
+        }
+      }
+
+      try {
+        const trace = await getTopicTrace(topicId);
+        if (!cancelled) {
+          setTraceItems(trace.items ?? []);
+          setTraceRunId(trace.runId ?? null);
+          setTraceError("");
+        }
+      } catch (loadTraceError) {
+        if (!cancelled) {
+          setTraceError(getErrorMessage(loadTraceError));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingTrace(false);
         }
       }
 
@@ -221,6 +276,21 @@ export const TopicPage = () => {
 
           setEvents((current) => [...current, event].slice(-500));
           applyIncomingEvent(event);
+
+          const activeTraceRunId = traceRunIdRef.current;
+          if (activeTraceRunId && event.runId !== activeTraceRunId) {
+            return;
+          }
+
+          if (!activeTraceRunId) {
+            traceRunIdRef.current = event.runId;
+            setTraceRunId(event.runId);
+          }
+
+          const incomingTraceItems = mapEventToTraceItems(event);
+          if (incomingTraceItems.length > 0) {
+            setTraceItems((current) => mergeTraceItems(current, incomingTraceItems));
+          }
         },
       });
     };
@@ -244,7 +314,22 @@ export const TopicPage = () => {
     setError("");
 
     try {
-      await startRun(topicId);
+      const run = await startRun(topicId);
+      setTraceRunId(run.runId);
+      traceRunIdRef.current = run.runId;
+      setTraceItems([]);
+      setTraceError("");
+      setLoadingTrace(true);
+
+      try {
+        const trace = await getTopicTrace(topicId, run.runId);
+        setTraceItems(trace.items ?? []);
+      } catch (loadTraceError) {
+        setTraceError(getErrorMessage(loadTraceError));
+      } finally {
+        setLoadingTrace(false);
+      }
+
       await refreshTopics();
     } catch (runError) {
       setError(getErrorMessage(runError));
@@ -300,14 +385,43 @@ export const TopicPage = () => {
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      <div className="topic-body">
-        <div className="topic-flow-panel">
-          <FlowCanvas agentsStatus={agentsStatus} onSelectAgent={handleSelectAgent} />
-        </div>
-        <div className="topic-feed-panel">
-          <EventFeed events={events} />
-        </div>
+      <div className="topic-view-tabs">
+        <button
+          type="button"
+          className={viewMode === "pipeline" ? "active" : ""}
+          onClick={() => setViewMode("pipeline")}
+        >
+          Pipeline
+        </button>
+        <button
+          type="button"
+          className={viewMode === "trace" ? "active" : ""}
+          onClick={() => setViewMode("trace")}
+        >
+          Trace
+        </button>
+        {traceRunId ? <span className="trace-run-id">Run: {traceRunId}</span> : null}
       </div>
+
+      {viewMode === "pipeline" ? (
+        <div className="topic-body">
+          <div className="topic-flow-panel">
+            <FlowCanvas agentsStatus={agentsStatus} onSelectAgent={handleSelectAgent} />
+          </div>
+          <div className="topic-feed-panel">
+            <EventFeed events={events} />
+          </div>
+        </div>
+      ) : (
+        <div className="topic-trace-panel">
+          <TraceTimeline
+            items={traceItems}
+            artifacts={artifacts}
+            loading={loadingTrace}
+            error={traceError}
+          />
+        </div>
+      )}
 
       <AgentDrawer
         open={drawerOpen}
