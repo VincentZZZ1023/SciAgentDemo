@@ -5,11 +5,15 @@ export const EVENT_KINDS = [
   "agent_status_updated",
   "event_emitted",
   "artifact_created",
+  "message_created",
 ] as const;
 export type EventKind = (typeof EVENT_KINDS)[number];
 
 export const SEVERITIES = ["info", "warn", "error"] as const;
 export type Severity = (typeof SEVERITIES)[number];
+
+export const MESSAGE_ROLES = ["user", "assistant", "system"] as const;
+export type MessageRole = (typeof MESSAGE_ROLES)[number];
 
 export interface Artifact {
   artifactId: string;
@@ -30,6 +34,16 @@ export interface Event {
   payload?: Record<string, unknown>;
   artifacts?: Artifact[];
   traceId?: string;
+}
+
+export interface Message {
+  messageId: string;
+  topicId: string;
+  runId?: string | null;
+  agentId: AgentId;
+  role: MessageRole;
+  content: string;
+  ts: number;
 }
 
 export interface AgentStatus {
@@ -71,6 +85,7 @@ export interface SnapshotResponse {
 const agentSet = new Set<string>(AGENT_IDS);
 const eventKindSet = new Set<string>(EVENT_KINDS);
 const severitySet = new Set<string>(SEVERITIES);
+const messageRoleSet = new Set<string>(MESSAGE_ROLES);
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -89,6 +104,38 @@ export const isArtifact = (value: unknown): value is Artifact => {
     isNonEmptyString(value.uri) &&
     isNonEmptyString(value.contentType)
   );
+};
+
+export const isMessage = (value: unknown): value is Message => {
+  if (!isObject(value)) {
+    return false;
+  }
+
+  if (!isNonEmptyString(value.messageId)) {
+    return false;
+  }
+
+  if (!isNonEmptyString(value.topicId)) {
+    return false;
+  }
+
+  if (value.runId !== undefined && value.runId !== null && !isNonEmptyString(value.runId)) {
+    return false;
+  }
+
+  if (typeof value.agentId !== "string" || !agentSet.has(value.agentId)) {
+    return false;
+  }
+
+  if (typeof value.role !== "string" || !messageRoleSet.has(value.role)) {
+    return false;
+  }
+
+  if (!isNonEmptyString(value.content)) {
+    return false;
+  }
+
+  return typeof value.ts === "number" && Number.isFinite(value.ts) && value.ts >= 0;
 };
 
 export const isEvent = (value: unknown): value is Event => {
@@ -141,6 +188,15 @@ export const isEvent = (value: unknown): value is Event => {
     return false;
   }
 
+  if (value.kind === "message_created") {
+    if (!isObject(value.payload)) {
+      return false;
+    }
+    if (!isMessage(value.payload.message)) {
+      return false;
+    }
+  }
+
   if (value.traceId !== undefined && typeof value.traceId !== "string") {
     return false;
   }
@@ -150,4 +206,16 @@ export const isEvent = (value: unknown): value is Event => {
 
 export const parseWsEvent = (value: unknown): Event | null => {
   return isEvent(value) ? value : null;
+};
+
+export const parseMessageFromEvent = (event: Event): Message | null => {
+  if (event.kind !== "message_created") {
+    return null;
+  }
+
+  if (!event.payload || !isMessage(event.payload.message)) {
+    return null;
+  }
+
+  return event.payload.message;
 };

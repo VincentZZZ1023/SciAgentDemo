@@ -4,6 +4,7 @@ import asyncio
 import json
 import shutil
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -14,7 +15,7 @@ from sqlmodel import SQLModel, Session, create_engine, delete, select
 
 from app.core.config import BACKEND_DIR, get_settings
 from app.models.db_models import ArtifactTable, EventTable, RunTable, TopicTable
-from app.models.schemas import AgentId, ArtifactRef, Event, EventKind
+from app.models.schemas import AgentId, ArtifactRef, Event, EventKind, MessageRole
 
 AGENT_ORDER = [AgentId.review, AgentId.ideation, AgentId.experiment]
 
@@ -77,6 +78,10 @@ def init_db() -> None:
 class DatabaseStore:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
+        self._messages_lock = asyncio.Lock()
+        self._messages: dict[str, dict[str, list[dict]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
         self._artifacts_root = ARTIFACTS_ROOT
 
     def _resolve_topic_runs(self, session: Session, topic_id: str) -> tuple[str | None, str | None]:
@@ -547,9 +552,51 @@ class DatabaseStore:
                 session.delete(topic)
                 session.commit()
 
+        async with self._messages_lock:
+            self._messages.pop(topic_id, None)
+
         artifact_dir = self._artifacts_root / topic_id
         if artifact_dir.exists():
             shutil.rmtree(artifact_dir)
+
+    async def list_messages(self, topic_id: str, agent_id: AgentId) -> list[dict]:
+        topic = await self.get_topic(topic_id)
+        if topic is None:
+            raise KeyError(topic_id)
+
+        async with self._messages_lock:
+            items = [item.copy() for item in self._messages.get(topic_id, {}).get(agent_id.value, [])]
+
+        items.sort(key=lambda item: item["ts"])
+        return items
+
+    async def create_message(
+        self,
+        *,
+        topic_id: str,
+        agent_id: AgentId,
+        role: MessageRole,
+        content: str,
+        run_id: str | None = None,
+    ) -> dict:
+        topic = await self.get_topic(topic_id)
+        if topic is None:
+            raise KeyError(topic_id)
+
+        message = {
+            "messageId": str(uuid4()),
+            "topicId": topic_id,
+            "runId": run_id,
+            "agentId": agent_id.value,
+            "role": role.value,
+            "content": content,
+            "ts": now_ms(),
+        }
+
+        async with self._messages_lock:
+            self._messages[topic_id][agent_id.value].append(message)
+
+        return message.copy()
 
 
 store = DatabaseStore()

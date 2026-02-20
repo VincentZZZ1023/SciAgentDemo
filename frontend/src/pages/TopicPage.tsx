@@ -311,6 +311,7 @@ export const TopicPage = () => {
 
       <AgentDrawer
         open={drawerOpen}
+        topicId={topicId}
         agentId={selectedAgentId}
         events={events}
         artifacts={artifacts}

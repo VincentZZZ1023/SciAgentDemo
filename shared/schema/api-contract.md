@@ -9,6 +9,7 @@
 - 鉴权：JWT Bearer Token
 - Agent 枚举：`review | ideation | experiment`
 - WS 事件协议：见 `shared/schema/events.schema.json`
+- WS `kind` 枚举：`agent_status_updated | event_emitted | artifact_created | message_created`
 
 ### 1.1 通用错误体
 
@@ -262,6 +263,94 @@
 }
 ```
 
+### 2.7 `GET /api/topics/{topicId}/agents/{agentId}/messages`
+
+用途：获取指定 agent 在当前 topic 下的对话线程（按 `ts` 升序）。
+
+请求头：
+
+- `Authorization: Bearer <access_token>`
+
+路径参数：
+
+- `topicId: string`
+- `agentId: review | ideation | experiment`
+
+成功响应 `200`：
+
+```json
+{
+  "messages": [
+    {
+      "messageId": "0e850529-a2e1-4431-9668-f4cb482f196e",
+      "topicId": "topic-neural-symbolic-discovery",
+      "runId": "run-20260219-002",
+      "agentId": "ideation",
+      "role": "user",
+      "content": "请基于 survey 生成可执行 idea",
+      "ts": 1771465000200
+    },
+    {
+      "messageId": "b3f2d52f-c2c6-4f7b-b843-777f0f2f8600",
+      "topicId": "topic-neural-symbolic-discovery",
+      "runId": "run-20260219-002",
+      "agentId": "ideation",
+      "role": "assistant",
+      "content": "Echo: 请基于 survey 生成可执行 idea",
+      "ts": 1771465000250
+    }
+  ]
+}
+```
+
+### 2.8 `POST /api/topics/{topicId}/agents/{agentId}/messages`
+
+用途：向指定 agent 对话线程写入一条用户消息，并返回新增消息（当前实现为 echo assistant 回复）。
+
+请求头：
+
+- `Authorization: Bearer <access_token>`
+
+路径参数：
+
+- `topicId: string`
+- `agentId: review | ideation | experiment`
+
+请求体：
+
+```json
+{
+  "content": "请总结实验结果并提出下一轮改进方向"
+}
+```
+
+成功响应 `201`：
+
+```json
+{
+  "messages": [
+    {
+      "messageId": "cb88d4f6-b5fd-4aef-a725-4f54a2d0d09f",
+      "topicId": "topic-neural-symbolic-discovery",
+      "runId": "run-20260219-002",
+      "agentId": "ideation",
+      "role": "user",
+      "content": "请总结实验结果并提出下一轮改进方向",
+      "ts": 1771465000300
+    },
+    {
+      "messageId": "3e5ef475-c749-4ec9-9688-fb510f5519e6",
+      "topicId": "topic-neural-symbolic-discovery",
+      "runId": "run-20260219-002",
+      "agentId": "ideation",
+      "role": "assistant",
+      "content": "Echo: 请总结实验结果并提出下一轮改进方向",
+      "ts": 1771465000350
+    }
+  ]
+}
+```
+
 ## 3. WebSocket 契约
 
 ### 3.1 `WS /api/ws?topicId=...`
@@ -285,6 +374,7 @@ ws://localhost:8000/api/ws?topicId=topic-neural-symbolic-discovery&token=<access
 
 - 每条消息都是单个 JSON 对象。
 - 每条消息必须满足 `shared/schema/events.schema.json`。
+- `kind=message_created` 时，`payload.message` 为新增消息对象（`messageId/topicId/runId?/agentId/role/content/ts`）。
 
 客户端上行消息：
 

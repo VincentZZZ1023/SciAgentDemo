@@ -630,7 +630,7 @@ p {
 
 .drawer-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
   padding: 10px;
 }
@@ -649,6 +649,49 @@ p {
 .drawer-list {
   display: grid;
   gap: 8px;
+}
+
+.chat-panel {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 8px;
+  min-height: 100%;
+}
+
+.chat-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.chat-bubble {
+  max-width: 85%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-soft);
+  padding: 9px 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.chat-bubble-user {
+  justify-self: end;
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--border));
+  background: color-mix(in srgb, var(--primary-soft) 50%, var(--panel));
+}
+
+.chat-bubble-assistant {
+  justify-self: start;
+}
+
+.chat-bubble-system {
+  justify-self: center;
+  background: color-mix(in srgb, var(--warning-bg) 70%, var(--panel-soft));
+}
+
+.chat-meta {
+  font-size: 11px;
+  color: var(--muted);
 }
 
 .artifact-item {
@@ -691,6 +734,16 @@ p {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
+}
+
+.drawer-toast {
+  margin: 0 10px 10px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 50%, var(--border));
+  background: var(--warning-bg);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 12px;
 }
 
 .artifact-modal-overlay {

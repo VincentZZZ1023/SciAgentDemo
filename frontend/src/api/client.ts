@@ -1,4 +1,10 @@
-﻿import type { AgentId, SnapshotResponse, TopicDetail, TopicSummary } from "../types/events";
+import type {
+  AgentId,
+  Message,
+  SnapshotResponse,
+  TopicDetail,
+  TopicSummary,
+} from "../types/events";
 
 export const ACCESS_TOKEN_KEY = "access_token";
 
@@ -15,6 +21,10 @@ interface AuthMeResponse {
 interface TopicListResponse {
   items: TopicSummary[];
   total: number;
+}
+
+interface MessageListResponse {
+  messages: Message[];
 }
 
 interface RequestOptions extends RequestInit {
@@ -260,4 +270,29 @@ export const fetchArtifactContent = async (
     content: await response.text(),
     contentType: response.headers.get("Content-Type") ?? "text/plain",
   };
+};
+
+export const getAgentMessages = async (topicId: string, agentId: AgentId): Promise<Message[]> => {
+  const response = await apiFetch<MessageListResponse>(
+    `/api/topics/${topicId}/agents/${agentId}/messages`,
+    {
+      method: "GET",
+    },
+  );
+  return response.messages;
+};
+
+export const postAgentMessage = async (
+  topicId: string,
+  agentId: AgentId,
+  content: string,
+): Promise<Message[]> => {
+  const response = await apiFetch<MessageListResponse>(
+    `/api/topics/${topicId}/agents/${agentId}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    },
+  );
+  return response.messages;
 };

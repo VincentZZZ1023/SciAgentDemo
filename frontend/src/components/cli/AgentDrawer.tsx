@@ -1,11 +1,23 @@
-﻿import { KeyboardEvent, useMemo, useState } from "react";
-import { fetchArtifactContent } from "../../api/client";
-import type { AgentId, Artifact, Event, TopicDetail } from "../../types/events";
+﻿import { KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  fetchArtifactContent,
+  getAgentMessages,
+  postAgentMessage,
+} from "../../api/client";
+import {
+  parseMessageFromEvent,
+  type AgentId,
+  type Artifact,
+  type Event,
+  type Message,
+  type TopicDetail,
+} from "../../types/events";
 
-type DrawerTab = "logs" | "artifacts" | "context";
+type DrawerTab = "logs" | "artifacts" | "context" | "chat";
 
 interface AgentDrawerProps {
   open: boolean;
+  topicId: string;
   agentId: AgentId | null;
   events: Event[];
   artifacts: Artifact[];
@@ -43,8 +55,22 @@ const formatArtifactContent = (contentType: string, raw: string): string => {
   return raw;
 };
 
+const mergeMessages = (current: Message[], incoming: Message[]): Message[] => {
+  const map = new Map<string, Message>();
+
+  for (const item of current) {
+    map.set(item.messageId, item);
+  }
+  for (const item of incoming) {
+    map.set(item.messageId, item);
+  }
+
+  return Array.from(map.values()).sort((a, b) => a.ts - b.ts);
+};
+
 export const AgentDrawer = ({
   open,
+  topicId,
   agentId,
   events,
   artifacts,
@@ -53,9 +79,18 @@ export const AgentDrawer = ({
   onSendCommand,
 }: AgentDrawerProps) => {
   const [activeTab, setActiveTab] = useState<DrawerTab>("logs");
+
   const [commandText, setCommandText] = useState("");
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState("");
+  const [sendingCommand, setSendingCommand] = useState(false);
+  const [sendCommandError, setSendCommandError] = useState("");
+
+  const [chatMessages, setChatMessages] = useState<Message[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [loadingChat, setLoadingChat] = useState(false);
+  const [sendingChat, setSendingChat] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [toastMessage, setToastMessage] = useState("");
+  const toastTimerRef = useRef<number | null>(null);
 
   const [artifactModalOpen, setArtifactModalOpen] = useState(false);
   const [selectedArtifact, setSelectedArtifact] = useState<Artifact | null>(null);
@@ -63,6 +98,25 @@ export const AgentDrawer = ({
   const [artifactContent, setArtifactContent] = useState("");
   const [artifactContentType, setArtifactContentType] = useState("text/plain");
   const [artifactError, setArtifactError] = useState("");
+
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMessage("");
+      toastTimerRef.current = null;
+    }, 2600);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   const agentEvents = useMemo(() => {
     if (!agentId) {
@@ -80,7 +134,62 @@ export const AgentDrawer = ({
     [artifactContent, artifactContentType],
   );
 
-  const handleSend = async () => {
+  useEffect(() => {
+    if (!open || !agentId) {
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingChat(true);
+    setChatError("");
+    setChatMessages([]);
+
+    void getAgentMessages(topicId, agentId)
+      .then((messages) => {
+        if (!cancelled) {
+          setChatMessages(messages);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          const message = getErrorMessage(error);
+          setChatError(message);
+          showToast(message);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingChat(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, open, topicId]);
+
+  useEffect(() => {
+    if (!open || !agentId) {
+      return;
+    }
+
+    const incoming: Message[] = [];
+    for (const event of events) {
+      if (event.topicId !== topicId || event.agentId !== agentId) {
+        continue;
+      }
+      const message = parseMessageFromEvent(event);
+      if (message) {
+        incoming.push(message);
+      }
+    }
+
+    if (incoming.length > 0) {
+      setChatMessages((current) => mergeMessages(current, incoming));
+    }
+  }, [agentId, events, open, topicId]);
+
+  const handleSendCommand = async () => {
     if (!agentId) {
       return;
     }
@@ -90,23 +199,58 @@ export const AgentDrawer = ({
       return;
     }
 
-    setSending(true);
-    setSendError("");
+    setSendingCommand(true);
+    setSendCommandError("");
 
     try {
       await onSendCommand(agentId, text);
       setCommandText("");
     } catch (error) {
-      setSendError(getErrorMessage(error));
+      const message = getErrorMessage(error);
+      setSendCommandError(message);
+      showToast(message);
     } finally {
-      setSending(false);
+      setSendingCommand(false);
     }
   };
 
   const handleCommandEnter = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      void handleSend();
+      void handleSendCommand();
+    }
+  };
+
+  const handleSendChat = async () => {
+    if (!agentId) {
+      return;
+    }
+
+    const content = chatInput.trim();
+    if (!content) {
+      return;
+    }
+
+    setSendingChat(true);
+    setChatError("");
+
+    try {
+      const created = await postAgentMessage(topicId, agentId, content);
+      setChatMessages((current) => mergeMessages(current, created));
+      setChatInput("");
+    } catch (error) {
+      const message = getErrorMessage(error);
+      setChatError(message);
+      showToast(message);
+    } finally {
+      setSendingChat(false);
+    }
+  };
+
+  const handleChatEnter = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void handleSendChat();
     }
   };
 
@@ -149,7 +293,7 @@ export const AgentDrawer = ({
         <header className="drawer-header">
           <div>
             <h3>{agentId} CLI</h3>
-            <p>Send command and inspect logs/artifacts/context</p>
+            <p>Send command and inspect logs/artifacts/context/chat</p>
           </div>
           <button type="button" onClick={onClose}>
             Close
@@ -177,6 +321,13 @@ export const AgentDrawer = ({
             onClick={() => setActiveTab("context")}
           >
             Context
+          </button>
+          <button
+            type="button"
+            className={activeTab === "chat" ? "active" : ""}
+            onClick={() => setActiveTab("chat")}
+          >
+            Chat
           </button>
         </div>
 
@@ -218,33 +369,69 @@ export const AgentDrawer = ({
             <div className="context-panel">
               <h4>Topic</h4>
               <p>{topic?.title ?? "Unknown topic"}</p>
-              <p className="muted">{topic?.description || "暂无"}</p>
+              <p className="muted">{topic?.description || "N/A"}</p>
 
               <h4>Recent Survey</h4>
-              <p>{survey ? survey.name : "暂无"}</p>
+              <p>{survey ? survey.name : "N/A"}</p>
 
               <h4>Recent Idea</h4>
-              <p>{idea ? idea.name : "暂无"}</p>
+              <p>{idea ? idea.name : "N/A"}</p>
 
               <h4>Recent Results</h4>
-              <p>{results ? results.name : "暂无"}</p>
+              <p>{results ? results.name : "N/A"}</p>
+            </div>
+          ) : null}
+
+          {activeTab === "chat" ? (
+            <div className="chat-panel">
+              {loadingChat ? <p className="muted">Loading messages...</p> : null}
+              {!loadingChat && chatMessages.length === 0 ? <p className="muted">No messages yet</p> : null}
+
+              <div className="chat-list">
+                {chatMessages.map((message) => (
+                  <article
+                    key={message.messageId}
+                    className={`chat-bubble chat-bubble-${message.role}`}
+                  >
+                    <p>{message.content}</p>
+                    <span className="chat-meta">{new Date(message.ts).toLocaleString()}</span>
+                  </article>
+                ))}
+              </div>
+
+              {chatError ? <p className="form-error">{chatError}</p> : null}
             </div>
           ) : null}
         </div>
 
-        <footer className="drawer-footer">
-          <input
-            value={commandText}
-            onChange={(event) => setCommandText(event.target.value)}
-            onKeyDown={handleCommandEnter}
-            placeholder={`Command to ${agentId}`}
-          />
-          <button type="button" onClick={() => void handleSend()} disabled={sending}>
-            {sending ? "Sending..." : "Send"}
-          </button>
-        </footer>
+        {activeTab === "chat" ? (
+          <footer className="drawer-footer">
+            <input
+              value={chatInput}
+              onChange={(event) => setChatInput(event.target.value)}
+              onKeyDown={handleChatEnter}
+              placeholder={`Message to ${agentId}`}
+            />
+            <button type="button" onClick={() => void handleSendChat()} disabled={sendingChat}>
+              {sendingChat ? "Sending..." : "Send"}
+            </button>
+          </footer>
+        ) : (
+          <footer className="drawer-footer">
+            <input
+              value={commandText}
+              onChange={(event) => setCommandText(event.target.value)}
+              onKeyDown={handleCommandEnter}
+              placeholder={`Command to ${agentId}`}
+            />
+            <button type="button" onClick={() => void handleSendCommand()} disabled={sendingCommand}>
+              {sendingCommand ? "Sending..." : "Send"}
+            </button>
+          </footer>
+        )}
 
-        {sendError ? <p className="form-error">{sendError}</p> : null}
+        {sendCommandError ? <p className="form-error">{sendCommandError}</p> : null}
+        {toastMessage ? <div className="drawer-toast">{toastMessage}</div> : null}
       </aside>
 
       {artifactModalOpen ? (
@@ -272,3 +459,4 @@ export const AgentDrawer = ({
     </>
   );
 };
+

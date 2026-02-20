@@ -16,6 +16,7 @@ class EventKind(str, Enum):
     agent_status_updated = "agent_status_updated"
     event_emitted = "event_emitted"
     artifact_created = "artifact_created"
+    message_created = "message_created"
 
 
 class Severity(str, Enum):
@@ -48,6 +49,37 @@ class Event(BaseModel):
     def validate_artifact_requirement(self) -> "Event":
         if self.kind == EventKind.artifact_created and not self.artifacts:
             raise ValueError("artifacts is required when kind=artifact_created")
+        return self
+
+
+class MessageRole(str, Enum):
+    user = "user"
+    assistant = "assistant"
+    system = "system"
+
+
+class Message(BaseModel):
+    messageId: str = Field(min_length=8)
+    topicId: str = Field(min_length=1)
+    runId: str | None = None
+    agentId: AgentId
+    role: MessageRole
+    content: str = Field(min_length=1)
+    ts: int = Field(ge=0)
+
+
+class MessageListResponse(BaseModel):
+    messages: list[Message] = Field(default_factory=list)
+
+
+class MessageCreateRequest(BaseModel):
+    content: str
+
+    @model_validator(mode="after")
+    def validate_content(self) -> "MessageCreateRequest":
+        if not self.content or not self.content.strip():
+            raise ValueError("content is required")
+        self.content = self.content.strip()
         return self
 
 
