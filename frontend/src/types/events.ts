@@ -6,6 +6,7 @@ export const EVENT_KINDS = [
   "event_emitted",
   "artifact_created",
   "message_created",
+  "agent_subtasks_updated",
 ] as const;
 export type EventKind = (typeof EVENT_KINDS)[number];
 
@@ -20,6 +21,16 @@ export interface Artifact {
   name: string;
   uri: string;
   contentType: string;
+}
+
+export const SUBTASK_STATUSES = ["pending", "running", "completed", "failed"] as const;
+export type SubtaskStatus = (typeof SUBTASK_STATUSES)[number];
+
+export interface AgentSubtask {
+  id: string;
+  name: string;
+  status: SubtaskStatus;
+  progress: number;
 }
 
 export interface Event {
@@ -104,6 +115,7 @@ const agentSet = new Set<string>(AGENT_IDS);
 const eventKindSet = new Set<string>(EVENT_KINDS);
 const severitySet = new Set<string>(SEVERITIES);
 const messageRoleSet = new Set<string>(MESSAGE_ROLES);
+const subtaskStatusSet = new Set<string>(SUBTASK_STATUSES);
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -154,6 +166,27 @@ export const isMessage = (value: unknown): value is Message => {
   }
 
   return typeof value.ts === "number" && Number.isFinite(value.ts) && value.ts >= 0;
+};
+
+export const isAgentSubtask = (value: unknown): value is AgentSubtask => {
+  if (!isObject(value)) {
+    return false;
+  }
+
+  if (!isNonEmptyString(value.id) || !isNonEmptyString(value.name)) {
+    return false;
+  }
+
+  if (typeof value.status !== "string" || !subtaskStatusSet.has(value.status)) {
+    return false;
+  }
+
+  return (
+    typeof value.progress === "number" &&
+    Number.isFinite(value.progress) &&
+    value.progress >= 0 &&
+    value.progress <= 1
+  );
 };
 
 export const isEvent = (value: unknown): value is Event => {
@@ -215,6 +248,28 @@ export const isEvent = (value: unknown): value is Event => {
     }
   }
 
+  if (value.kind === "agent_subtasks_updated") {
+    if (!isObject(value.payload)) {
+      return false;
+    }
+    if (!Array.isArray(value.payload.subtasks) || !value.payload.subtasks.every(isAgentSubtask)) {
+      return false;
+    }
+    if (
+      typeof value.payload.subtaskCount !== "number" ||
+      !Number.isFinite(value.payload.subtaskCount) ||
+      value.payload.subtaskCount < 0
+    ) {
+      return false;
+    }
+    if (
+      typeof value.payload.stage !== "string" ||
+      !["review", "ideation", "experiment", "feedback"].includes(value.payload.stage)
+    ) {
+      return false;
+    }
+  }
+
   if (value.traceId !== undefined && typeof value.traceId !== "string") {
     return false;
   }
@@ -236,6 +291,18 @@ export const parseMessageFromEvent = (event: Event): Message | null => {
   }
 
   return event.payload.message;
+};
+
+export const parseAgentSubtasksFromEvent = (event: Event): AgentSubtask[] | null => {
+  if (event.kind !== "agent_subtasks_updated") {
+    return null;
+  }
+  if (!event.payload || !Array.isArray(event.payload.subtasks)) {
+    return null;
+  }
+
+  const subtasks = event.payload.subtasks.filter(isAgentSubtask);
+  return subtasks.length > 0 ? subtasks : [];
 };
 
 export const mapEventToTraceItems = (event: Event): TraceItem[] => {
@@ -302,6 +369,19 @@ export const mapEventToTraceItems = (event: Event): TraceItem[] => {
     return [
       {
         id: `event-${event.eventId}`,
+        ts: event.ts,
+        agentId: event.agentId,
+        kind: "event",
+        summary: event.summary,
+        payload: event.payload,
+      },
+    ];
+  }
+
+  if (event.kind === "agent_subtasks_updated") {
+    return [
+      {
+        id: `subtasks-${event.eventId}`,
         ts: event.ts,
         agentId: event.agentId,
         kind: "event",

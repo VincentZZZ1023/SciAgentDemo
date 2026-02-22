@@ -800,6 +800,19 @@ class DatabaseStore:
                         "payload": payload or None,
                     }
                 )
+                continue
+
+            if row.kind == EventKind.agent_subtasks_updated.value:
+                timeline_items.append(
+                    {
+                        "id": f"subtasks-{row.event_id}",
+                        "ts": row.ts,
+                        "agentId": row.agent_id,
+                        "kind": TraceItemKind.event.value,
+                        "summary": row.summary,
+                        "payload": payload or None,
+                    }
+                )
 
         for row in message_rows:
             if row.message_id in message_ids:

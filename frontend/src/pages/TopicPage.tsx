@@ -12,8 +12,10 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import {
   AGENT_IDS,
   mapEventToTraceItems,
+  parseAgentSubtasksFromEvent,
   parseWsEvent,
   type AgentId,
+  type AgentSubtask,
   type AgentStatus,
   type Artifact,
   type Event,
@@ -42,6 +44,14 @@ const createDefaultAgentRecord = (): Record<AgentId, AgentStatus> => {
     review: createEmptyStatus("review"),
     ideation: createEmptyStatus("ideation"),
     experiment: createEmptyStatus("experiment"),
+  };
+};
+
+const createDefaultSubtasksRecord = (): Record<AgentId, AgentSubtask[]> => {
+  return {
+    review: [],
+    ideation: [],
+    experiment: [],
   };
 };
 
@@ -97,6 +107,17 @@ const normalizeEvents = (rawEvents: unknown[]): Event[] => {
   return parsedEvents;
 };
 
+const buildSubtasksRecordFromEvents = (items: Event[]): Record<AgentId, AgentSubtask[]> => {
+  const record = createDefaultSubtasksRecord();
+  for (const event of items) {
+    const subtasks = parseAgentSubtasksFromEvent(event);
+    if (subtasks && AGENT_IDS.includes(event.agentId)) {
+      record[event.agentId] = subtasks;
+    }
+  }
+  return record;
+};
+
 export const TopicPage = () => {
   const { topicId } = useParams();
   const { topics, refreshTopics } = useOutletContext<AppLayoutContext>();
@@ -110,6 +131,9 @@ export const TopicPage = () => {
   );
   const [events, setEvents] = useState<Event[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [agentSubtasks, setAgentSubtasks] = useState<Record<AgentId, AgentSubtask[]>>(
+    createDefaultSubtasksRecord(),
+  );
 
   const [traceItems, setTraceItems] = useState<TraceItem[]>([]);
   const [traceRunId, setTraceRunId] = useState<string | null>(null);
@@ -177,6 +201,16 @@ export const TopicPage = () => {
       const incomingArtifacts = event.artifacts as Artifact[];
       setArtifacts((current) => mergeArtifacts(current, incomingArtifacts));
     }
+
+    if (event.kind === "agent_subtasks_updated") {
+      const subtasks = parseAgentSubtasksFromEvent(event);
+      if (subtasks) {
+        setAgentSubtasks((current) => ({
+          ...current,
+          [event.agentId]: subtasks,
+        }));
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -193,6 +227,7 @@ export const TopicPage = () => {
       setLoadingTrace(false);
       setTraceError("");
       setAgentsStatus(createDefaultAgentRecord());
+      setAgentSubtasks(createDefaultSubtasksRecord());
       return;
     }
 
@@ -214,6 +249,7 @@ export const TopicPage = () => {
     setTraceItems([]);
     setTraceRunId(null);
     setAgentsStatus(createDefaultAgentRecord());
+    setAgentSubtasks(createDefaultSubtasksRecord());
 
     const bootstrap = async () => {
       try {
@@ -224,7 +260,9 @@ export const TopicPage = () => {
 
         setTopic(snapshot.topic);
         setAgentsStatus(buildAgentRecord(snapshot.agents ?? []));
-        setEvents(normalizeEvents((snapshot.events ?? []) as unknown[]));
+        const snapshotEvents = normalizeEvents((snapshot.events ?? []) as unknown[]);
+        setEvents(snapshotEvents);
+        setAgentSubtasks(buildSubtasksRecordFromEvents(snapshotEvents));
         setArtifacts(snapshot.artifacts ?? []);
       } catch (snapshotError) {
         if (!cancelled) {
@@ -321,6 +359,7 @@ export const TopicPage = () => {
       setTraceRunId(run.runId);
       traceRunIdRef.current = run.runId;
       setTraceItems([]);
+      setAgentSubtasks(createDefaultSubtasksRecord());
       setTraceError("");
       setLoadingTrace(true);
 
@@ -366,9 +405,12 @@ export const TopicPage = () => {
     <section className="topic-page">
       <header className="topic-topbar">
         <div className="topic-topbar-meta">
+          <span className="topic-topbar-label">Workflow Builder</span>
           <h2>{topic?.title ?? fallbackTopic?.title ?? topicId}</h2>
-          <p>
-            Status: <strong>{topic?.status ?? fallbackTopic?.status ?? "unknown"}</strong>
+          <p className="topic-topbar-statusline">
+            <span>
+              Status: <strong>{topic?.status ?? fallbackTopic?.status ?? "unknown"}</strong>
+            </span>
             <span className={`ws-state ws-${wsStatus}`}>WS: {wsStatus}</span>
           </p>
         </div>
@@ -389,27 +431,35 @@ export const TopicPage = () => {
       {error ? <div className="error-banner">{error}</div> : null}
 
       <div className="topic-view-tabs">
-        <button
-          type="button"
-          className={viewMode === "pipeline" ? "active" : ""}
-          onClick={() => setViewMode("pipeline")}
-        >
-          Pipeline
-        </button>
-        <button
-          type="button"
-          className={viewMode === "trace" ? "active" : ""}
-          onClick={() => setViewMode("trace")}
-        >
-          Trace
-        </button>
-        {traceRunId ? <span className="trace-run-id">Run: {traceRunId}</span> : null}
+        <div className="topic-view-tabs-left">
+          <button
+            type="button"
+            className={viewMode === "pipeline" ? "active" : ""}
+            onClick={() => setViewMode("pipeline")}
+          >
+            Pipeline
+          </button>
+          <button
+            type="button"
+            className={viewMode === "trace" ? "active" : ""}
+            onClick={() => setViewMode("trace")}
+          >
+            Trace
+          </button>
+        </div>
+        <div className="topic-view-tabs-right">
+          {traceRunId ? <span className="trace-run-id">Run: {traceRunId}</span> : null}
+        </div>
       </div>
 
       {viewMode === "pipeline" ? (
         <div className="topic-body">
           <div className="topic-flow-panel">
-            <FlowCanvas agentsStatus={agentsStatus} onSelectAgent={handleSelectAgent} />
+            <FlowCanvas
+              agentsStatus={agentsStatus}
+              agentSubtasks={agentSubtasks}
+              onSelectAgent={handleSelectAgent}
+            />
           </div>
           <div className="topic-feed-panel">
             <EventFeed events={events} />

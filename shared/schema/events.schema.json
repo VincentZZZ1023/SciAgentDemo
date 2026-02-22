@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.org/sci-agent/events.schema.json",
   "title": "SciAgent WebSocket Event Schema",
@@ -40,7 +40,13 @@
     },
     "kind": {
       "type": "string",
-      "enum": ["agent_status_updated", "event_emitted", "artifact_created", "message_created"]
+      "enum": [
+        "agent_status_updated",
+        "event_emitted",
+        "artifact_created",
+        "message_created",
+        "agent_subtasks_updated"
+      ]
     },
     "severity": {
       "type": "string",
@@ -148,6 +154,63 @@
                     "minimum": 0
                   }
                 }
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "agent_subtasks_updated"
+          }
+        },
+        "required": ["kind"]
+      },
+      "then": {
+        "required": ["payload"],
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": ["subtasks", "subtaskCount", "stage"],
+            "properties": {
+              "subtasks": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "name", "status", "progress"],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": ["pending", "running", "completed", "failed"]
+                    },
+                    "progress": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  }
+                }
+              },
+              "subtaskCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "stage": {
+                "type": "string",
+                "enum": ["review", "ideation", "experiment", "feedback"]
               }
             },
             "additionalProperties": true

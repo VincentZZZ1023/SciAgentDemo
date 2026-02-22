@@ -17,7 +17,10 @@ export const EventFeed = ({ events }: EventFeedProps) => {
   return (
     <section className="event-feed">
       <div className="panel-header">
-        <h3>Event Feed</h3>
+        <div className="panel-header-main">
+          <h3>Event Feed</h3>
+          <span className="panel-header-subtitle">Live Stream</span>
+        </div>
         <span>{orderedEvents.length}</span>
       </div>
 

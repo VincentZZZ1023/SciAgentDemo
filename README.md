@@ -1,12 +1,17 @@
 ﻿# SciAgentDemo
 
-这是一个科研多 Agent 协作 Demo。
+一个可联调的科研多 Agent 开发者控制台 Demo。  
+技术栈：`FastAPI + WebSocket + SQLite + React(Vite/TS) + React Flow`。
 
-当前进度：
+## 当前能力
 
-- Step 1 已完成：契约与工程骨架（`shared/schema`）
-- Step 2 已完成：FastAPI 后端（真 REST、真 WebSocket、SQLite 持久化、可接入 DeepSeek 的 runner）
-- Step 3 已完成：React 前端（Vite + TypeScript）与后端真接口联调
+- 三 Agent 自动闭环：`review -> ideation -> experiment -> ideation(feedback)`
+- 真实 REST + 真实 WS（不依赖 mock 业务数据）
+- SQLite 持久化（topics/runs/events/messages/artifacts）
+- Artifact 文件落盘与鉴权读取
+- Topic Trace 时间线（List/Graph）
+- Agent Drawer（Logs / Artifacts / Context / Chat）
+- DeepSeek 可选接入（未配置 key 时自动 fallback）
 
 ## 目录结构
 
@@ -30,26 +35,67 @@
       └─ api-contract.md
 ```
 
-## 三个 Agent 的数据流向
+## 数据流（核心）
 
-核心 pipeline：`review -> ideation -> experiment -> ideation(feedback)`
+1. 前端登录获取 JWT，后续 REST/WS 都带 token。
+2. 进入 topic 时先拉 `snapshot`，再连 `WS` 接收实时事件。
+3. 点击 `Run` 后，后端异步执行 pipeline 并持续广播事件。
+4. Agent 产物写入 `backend/data/artifacts/{topicId}/{runId}/`，元数据写入 SQLite。
+5. Trace 视图从 `/api/topics/{topicId}/trace` 拉历史，并由 WS 增量追加。
 
-- `review` 产出 `survey.md` 并交给 `ideation`
-- `ideation` 产出 `ideas.md` 并交给 `experiment`
-- `experiment` 产出 `results.json` 并反馈给 `ideation`
+## CLI 输入如何影响系统
 
-## 前后端对接方式
+- `Command`（`POST /agents/{agentId}/command`）：当前主要写事件流，用于操作与审计。
+- `Chat`（`POST /agents/{agentId}/messages`）：会写入 `messages`，并在 Agent 调 LLM 前注入 prompt 上下文，对后续生成有直接影响。
 
-- 前端先调用 `GET /api/topics/{topicId}/snapshot` 拉取初始状态
-- 再连接 `WS /api/ws?topicId=...&token=...` 接收增量事件
-- 事件结构必须满足 `shared/schema/events.schema.json`
-- 前端状态只能由后端真实返回的 `snapshot + WS events` 驱动，禁止 mock 业务数据
+## DeepSeek 说明
 
-## 后端启动
+- 在 `.env` 配置 `DEEPSEEK_API_KEY` 后，runner 会真实调用 DeepSeek。
+- 未配置 key 时不会阻塞运行，会 fallback 到模板产物并写 `warn/error` 事件。
+- 当前建议配置：
+  - `DEEPSEEK_TIMEOUT_SECONDS=120`
+  - `DEEPSEEK_MAX_RETRIES=1`
+  - `DEEPSEEK_RETRY_BACKOFF_SECONDS=1.5`
 
-详见 `backend/README.md`。
+## 本地启动
 
-## 前端启动
+### 一键联调（Windows）
+
+```powershell
+.\dev-up.ps1
+```
+
+默认行为：
+
+- 自动重启（先停旧进程，再启动）
+- 自动清理本项目残留的 `uvicorn/vite` 端口占用
+- 若端口已被健康服务占用，会自动复用现有 backend/frontend，避免重复报错
+- 自动检测依赖：缺少 `uvicorn` 或 `frontend/node_modules` 时会自动安装
+
+常用参数：
+
+```powershell
+.\dev-up.ps1 -Quick
+.\dev-up.ps1 -InstallDeps
+.\dev-up.ps1 -OpenBrowser
+.\dev-up.ps1 -Stop
+.\dev-up.ps1 -Status
+.\dev-up.ps1 -NoRestart
+.\dev-up.ps1 -ForceCleanPorts
+.\dev-up.ps1 -RequireDeepSeek
+.\dev-up.ps1 -ReadyTimeoutSec 45
+.\dev-up.ps1 -DryRun
+```
+
+说明：
+
+- `-Quick` = `-Restart + -ForceCleanPorts + -OpenBrowser`，适合日常测试。
+- 双击 `dev-up.bat` 默认就是 `-Quick` 模式。
+- `-Status` 可快速查看前后端是否在线、端口占用和已记录 PID。
+
+### 手动启动
+
+后端见 `backend/README.md`，前端：
 
 ```bash
 cd frontend
@@ -57,32 +103,13 @@ npm i
 npm run dev
 ```
 
-## 一键联调启动（Windows）
+## 协议与契约
 
-在仓库根目录执行：
+- WS 事件规范：`shared/schema/events.schema.json`
+- WS 示例：`shared/schema/events.example.json`
+- REST/WS 契约：`shared/schema/api-contract.md`
 
-```powershell
-.\dev-up.ps1
-```
+## 安全
 
-可选参数：
-
-```powershell
-.\dev-up.ps1 -InstallDeps      # 先安装后端/前端依赖，再启动
-.\dev-up.ps1 -OpenBrowser      # 启动后自动打开前端页面
-.\dev-up.ps1 -Restart          # 先停止旧进程，再重新启动
-.\dev-up.ps1 -Stop             # 停止由 dev-up 启动的前后端进程
-.\dev-up.ps1 -ForceCleanPorts  # 强制释放 8000/5173 端口占用后再启动
-.\dev-up.ps1 -ReadyTimeoutSec 45  # 设置启动就绪检测超时（秒）
-.\dev-up.ps1 -RequireDeepSeek  # 未配置 DEEPSEEK_API_KEY 时直接报错退出
-```
-
-也可以直接双击：
-
-- `dev-up.bat`
-
-## 安全约束
-
-- `DEEPSEEK_API_KEY` 只允许存在于后端环境变量
-- 前端代码与浏览器请求不得接触 DeepSeek API Key
-- 本仓库不得提交真实密钥
+- `DEEPSEEK_API_KEY` 仅放后端环境变量（`.env`），前端不可接触。
+- 不要把真实密钥提交到 Git。

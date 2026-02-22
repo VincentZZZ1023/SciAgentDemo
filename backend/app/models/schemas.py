@@ -17,6 +17,7 @@ class EventKind(str, Enum):
     event_emitted = "event_emitted"
     artifact_created = "artifact_created"
     message_created = "message_created"
+    agent_subtasks_updated = "agent_subtasks_updated"
 
 
 class Severity(str, Enum):

@@ -1,4 +1,4 @@
-﻿import { FormEvent, MouseEvent, useState } from "react";
+import { FormEvent, MouseEvent, useMemo, useState } from "react";
 import type { TopicSummary } from "../../types/events";
 
 interface TopicListProps {
@@ -19,6 +19,13 @@ const getErrorMessage = (error: unknown): string => {
   return "Request failed";
 };
 
+const formatTopicTime = (timestamp?: number): string => {
+  if (!timestamp || !Number.isFinite(timestamp)) {
+    return "just now";
+  }
+  return new Date(timestamp).toLocaleDateString();
+};
+
 export const TopicList = ({
   topics,
   currentTopicId,
@@ -29,11 +36,24 @@ export const TopicList = ({
   onDelete,
   onRefresh,
 }: TopicListProps) => {
+  const [search, setSearch] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [creating, setCreating] = useState(false);
   const [deletingTopicId, setDeletingTopicId] = useState<string | null>(null);
   const [createError, setCreateError] = useState("");
+
+  const filteredTopics = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    if (!keyword) {
+      return topics;
+    }
+    return topics.filter((topic) => topic.title.toLowerCase().includes(keyword));
+  }, [search, topics]);
+
+  const activeCount = useMemo(() => {
+    return topics.filter((topic) => topic.status === "active").length;
+  }, [topics]);
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -80,26 +100,67 @@ export const TopicList = ({
 
   return (
     <div className="topic-list">
+      <div className="topic-list-brand">
+        <div className="topic-list-brand-mark">S</div>
+        <div>
+          <h2>SciAgent Console</h2>
+          <p className="muted">Workflow control center</p>
+        </div>
+      </div>
+
       <div className="topic-list-header">
-        <h2>Topics</h2>
-        <button type="button" onClick={() => void onRefresh()} disabled={loading}>
-          Refresh
+        <div className="topic-list-header-meta">
+          <h3>Topics</h3>
+          <span className="topic-list-counter">{topics.length}</span>
+        </div>
+        <button
+          type="button"
+          className="topic-refresh-button"
+          onClick={() => void onRefresh()}
+          disabled={loading}
+        >
+          {loading ? "Refreshing..." : "Refresh"}
         </button>
+      </div>
+
+      <div className="topic-list-toolbar">
+        <input
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search topics"
+          className="topic-search-input"
+        />
+        <div className="topic-list-stats">
+          <span className="topic-stat">
+            <strong>{activeCount}</strong> active
+          </span>
+          <span className="topic-stat">
+            <strong>{topics.length}</strong> total
+          </span>
+        </div>
       </div>
 
       {error ? <div className="topic-list-error">{error}</div> : null}
 
       <div className="topic-items">
-        {topics.length === 0 && !loading ? <p className="muted">No topics yet</p> : null}
-        {topics.map((topic) => {
+        {filteredTopics.length === 0 && !loading ? (
+          <p className="muted">{topics.length > 0 ? "No matching topics" : "No topics yet"}</p>
+        ) : null}
+        {filteredTopics.map((topic) => {
           const active = topic.topicId === currentTopicId;
           const deleting = deletingTopicId === topic.topicId;
 
           return (
             <div key={topic.topicId} className={active ? "topic-item-row active" : "topic-item-row"}>
               <button type="button" className="topic-item" onClick={() => onSelect(topic.topicId)}>
-                <span className="topic-item-title">{topic.title}</span>
-                <span className="topic-item-status">{topic.status}</span>
+                <div className="topic-item-main">
+                  <span className="topic-item-dot" />
+                  <span className="topic-item-title">{topic.title}</span>
+                </div>
+                <div className="topic-item-meta">
+                  <span className={`topic-item-status topic-status-${topic.status}`}>{topic.status}</span>
+                  <span className="topic-item-time">{formatTopicTime(topic.updatedAt)}</span>
+                </div>
               </button>
               <button
                 type="button"
@@ -109,7 +170,7 @@ export const TopicList = ({
                 onClick={(event) => void handleDelete(event, topic)}
                 disabled={deleting}
               >
-                {deleting ? "..." : "🗑️"}
+                {deleting ? "..." : "Delete"}
               </button>
             </div>
           );
@@ -117,7 +178,10 @@ export const TopicList = ({
       </div>
 
       <form className="topic-create-form" onSubmit={handleCreate}>
-        <h3>New Topic</h3>
+        <div className="topic-create-head">
+          <h3>Create Topic</h3>
+          <p className="muted">Start a new research workflow</p>
+        </div>
         <input
           value={name}
           onChange={(event) => setName(event.target.value)}

@@ -9,7 +9,7 @@
 - 鉴权：JWT Bearer Token
 - Agent 枚举：`review | ideation | experiment`
 - WS 事件协议：见 `shared/schema/events.schema.json`
-- WS `kind` 枚举：`agent_status_updated | event_emitted | artifact_created | message_created`
+- WS `kind` 枚举：`agent_status_updated | event_emitted | artifact_created | message_created | agent_subtasks_updated`
 
 ### 1.1 通用错误体
 
@@ -435,6 +435,7 @@ ws://localhost:8000/api/ws?topicId=topic-neural-symbolic-discovery&token=<access
 - 每条消息都是单个 JSON 对象。
 - 每条消息必须满足 `shared/schema/events.schema.json`。
 - `kind=message_created` 时，`payload.message` 为新增消息对象（`messageId/topicId/runId?/agentId/role/content/ts`）。
+- `kind=agent_subtasks_updated` 时，`payload` 至少包含：`subtasks[]`、`subtaskCount`、`stage`。
 
 客户端上行消息：
 

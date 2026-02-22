@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from typing import Literal
 from uuid import uuid4
 
 from sqlmodel import Session
@@ -16,6 +17,9 @@ from app.store import store
 from app.store.database import ENGINE
 
 logger = logging.getLogger(__name__)
+
+SubtaskStatus = Literal["pending", "running", "completed", "failed"]
+StageName = Literal["review", "ideation", "experiment", "feedback"]
 
 
 def now_ms() -> int:
@@ -89,6 +93,253 @@ class FakePipelineRunner:
             "error": message or repr(exc),
             "errorType": exc.__class__.__name__,
         }
+
+    @staticmethod
+    def _sanitize_subtask_status(value: object) -> SubtaskStatus:
+        if isinstance(value, str) and value in {"pending", "running", "completed", "failed"}:
+            return value
+        return "pending"
+
+    @staticmethod
+    def _sanitize_subtask_progress(value: object, *, default: float = 0.0) -> float:
+        if isinstance(value, (int, float)):
+            return max(0.0, min(float(value), 1.0))
+        return default
+
+    @staticmethod
+    def _fallback_subtasks(
+        *,
+        agent_id: AgentId,
+        stage: StageName,
+        language_code: str,
+    ) -> list[dict]:
+        use_zh = language_code == "zh"
+        fallback_map: dict[tuple[AgentId, StageName], list[str]] = {
+            (AgentId.review, "review"): [
+                "Clarify research scope and constraints",
+                "Collect representative literature",
+                "Compare methods and identify gaps",
+                "Draft survey and hand off to ideation",
+            ],
+            (AgentId.ideation, "ideation"): [
+                "Extract actionable constraints from survey",
+                "Generate candidate research ideas",
+                "Evaluate risks and expected metrics",
+                "Finalize ideas and hand off to experiment",
+            ],
+            (AgentId.experiment, "experiment"): [
+                "Convert ideas into experiment plan",
+                "Prepare metrics and baseline assumptions",
+                "Run simulation and collect outputs",
+                "Summarize results and produce report",
+            ],
+            (AgentId.ideation, "feedback"): [
+                "Review experiment outcomes",
+                "Identify what to keep or change",
+                "Define next-iteration validation plan",
+                "Publish feedback loop summary",
+            ],
+        }
+
+        names = fallback_map.get((agent_id, stage), [])
+        if use_zh:
+            zh_map = {
+                "Clarify research scope and constraints": "明确研究范围与约束",
+                "Collect representative literature": "收集代表性文献",
+                "Compare methods and identify gaps": "对比方法并识别空白",
+                "Draft survey and hand off to ideation": "整理综述并交接给 ideation",
+                "Extract actionable constraints from survey": "从综述中提炼可执行约束",
+                "Generate candidate research ideas": "生成候选研究构思",
+                "Evaluate risks and expected metrics": "评估风险与预期指标",
+                "Finalize ideas and hand off to experiment": "固化方案并交接给 experiment",
+                "Convert ideas into experiment plan": "将构思转成实验计划",
+                "Prepare metrics and baseline assumptions": "准备指标与基线假设",
+                "Run simulation and collect outputs": "执行模拟并收集输出",
+                "Summarize results and produce report": "汇总结果并输出报告",
+                "Review experiment outcomes": "审阅实验结果",
+                "Identify what to keep or change": "识别保留项与调整项",
+                "Define next-iteration validation plan": "定义下一轮验证计划",
+                "Publish feedback loop summary": "发布反馈闭环总结",
+            }
+            names = [zh_map.get(name, name) for name in names]
+
+        subtasks: list[dict] = []
+        for index, name in enumerate(names):
+            subtasks.append(
+                {
+                    "id": f"{stage}-{index + 1}",
+                    "name": name,
+                    "status": "pending",
+                    "progress": 0.0,
+                }
+            )
+        return subtasks
+
+    def _normalize_subtasks(
+        self,
+        *,
+        raw_subtasks: object,
+        fallback_subtasks: list[dict],
+        stage: StageName,
+    ) -> list[dict]:
+        normalized: list[dict] = []
+
+        if isinstance(raw_subtasks, list):
+            for index, item in enumerate(raw_subtasks):
+                if not isinstance(item, dict):
+                    continue
+
+                name = item.get("name")
+                if not isinstance(name, str) or not name.strip():
+                    continue
+
+                item_id = item.get("id")
+                subtask_id = item_id.strip() if isinstance(item_id, str) and item_id.strip() else f"{stage}-{index + 1}"
+
+                normalized.append(
+                    {
+                        "id": subtask_id,
+                        "name": name.strip(),
+                        "status": self._sanitize_subtask_status(item.get("status")),
+                        "progress": self._sanitize_subtask_progress(item.get("progress")),
+                    }
+                )
+
+        # Hard guardrails: 4~8 entries, and start from pending state.
+        if len(normalized) < 4:
+            seen_ids = {item["id"] for item in normalized}
+            for fallback_item in fallback_subtasks:
+                if len(normalized) >= 4:
+                    break
+                if fallback_item["id"] in seen_ids:
+                    continue
+                normalized.append(dict(fallback_item))
+                seen_ids.add(fallback_item["id"])
+
+        if len(normalized) > 8:
+            normalized = normalized[:8]
+
+        for item in normalized:
+            item["status"] = "pending"
+            item["progress"] = 0.0
+
+        return normalized
+
+    @staticmethod
+    def _patch_subtask_state(
+        subtasks: list[dict],
+        index: int,
+        *,
+        status: SubtaskStatus,
+        progress: float | None = None,
+    ) -> list[dict]:
+        next_subtasks = [dict(item) for item in subtasks]
+        if index < 0 or index >= len(next_subtasks):
+            return next_subtasks
+
+        next_subtasks[index]["status"] = status
+        if progress is not None:
+            next_subtasks[index]["progress"] = max(0.0, min(float(progress), 1.0))
+        elif status == "completed":
+            next_subtasks[index]["progress"] = 1.0
+        elif status == "failed":
+            current = next_subtasks[index].get("progress")
+            next_subtasks[index]["progress"] = (
+                max(0.0, min(float(current), 1.0)) if isinstance(current, (int, float)) else 0.0
+            )
+
+        return next_subtasks
+
+    @staticmethod
+    def _mark_running_subtasks_failed(subtasks: list[dict]) -> list[dict]:
+        patched = [dict(item) for item in subtasks]
+        for item in patched:
+            if item.get("status") == "running":
+                item["status"] = "failed"
+        return patched
+
+    async def _emit_subtasks_update(
+        self,
+        *,
+        topic_id: str,
+        run_id: str,
+        agent_id: AgentId,
+        stage: StageName,
+        subtasks: list[dict],
+        trace_id: str,
+        severity: Severity = Severity.info,
+        summary: str | None = None,
+    ) -> None:
+        await self._emit(
+            build_event(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=agent_id,
+                kind=EventKind.agent_subtasks_updated,
+                severity=severity,
+                summary=summary or f"{agent_id.value} subtasks updated ({stage})",
+                payload={
+                    "subtasks": subtasks,
+                    "subtaskCount": len(subtasks),
+                    "stage": stage,
+                },
+                trace_id=trace_id,
+            )
+        )
+
+    async def generate_subtasks_plan(
+        self,
+        agent_id: AgentId,
+        stage: StageName,
+        topic_anchor: str,
+        upstream_ref: str,
+        language_code: str,
+        *,
+        topic_id: str,
+        run_id: str,
+        trace_id: str,
+    ) -> list[dict]:
+        fallback_subtasks = self._fallback_subtasks(
+            agent_id=agent_id,
+            stage=stage,
+            language_code=language_code,
+        )
+
+        planner_task = (
+            "Return strict JSON only:\n"
+            "{\n"
+            '  "subtasks": [\n'
+            '    {"id":"...", "name":"...", "status":"pending", "progress":0}\n'
+            "  ]\n"
+            "}\n"
+            f"Constraints: generate 4-8 subtasks for stage={stage} and agent={agent_id.value}. "
+            "Each subtask must be concrete and execution-ready."
+        )
+
+        planner_result = await self._generate_json_content(
+            topic_id=topic_id,
+            run_id=run_id,
+            agent_id=agent_id,
+            trace_id=trace_id,
+            system_policy="You are a planning module that decomposes agent work into executable subtasks.",
+            upstream_content=(
+                f"{topic_anchor}\n\n"
+                "<upstream_reference>\n"
+                f"{upstream_ref}\n"
+                "</upstream_reference>"
+            ),
+            final_task=planner_task,
+            fallback_content={"subtasks": fallback_subtasks},
+            max_tokens=700,
+        )
+
+        raw_subtasks = planner_result.get("subtasks") if isinstance(planner_result, dict) else None
+        normalized = self._normalize_subtasks(
+            raw_subtasks=raw_subtasks,
+            fallback_subtasks=fallback_subtasks,
+            stage=stage,
+        )
+        return normalized
 
     async def _emit(self, event: Event) -> None:
         await store.add_event(event)
@@ -550,6 +801,9 @@ class FakePipelineRunner:
 
     async def run_pipeline(self, topic_id: str, run_id: str) -> None:
         trace_id = f"trace-{uuid4()}"
+        active_subtasks: list[dict] | None = None
+        active_stage: StageName | None = None
+        active_agent: AgentId | None = None
 
         try:
             await store.update_run_status(topic_id, run_id, "running")
@@ -582,6 +836,45 @@ class FakePipelineRunner:
                 )
             )
 
+            review_subtasks = await self.generate_subtasks_plan(
+                AgentId.review,
+                "review",
+                topic_anchor,
+                topic_anchor,
+                preferred_language,
+                topic_id=topic_id,
+                run_id=run_id,
+                trace_id=trace_id,
+            )
+            active_subtasks = review_subtasks
+            active_stage = "review"
+            active_agent = AgentId.review
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.review,
+                stage="review",
+                subtasks=review_subtasks,
+                trace_id=trace_id,
+                summary="review subtasks planned",
+            )
+            review_subtasks = self._patch_subtask_state(
+                review_subtasks,
+                0,
+                status="running",
+                progress=0.1,
+            )
+            active_subtasks = review_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.review,
+                stage="review",
+                subtasks=review_subtasks,
+                trace_id=trace_id,
+                summary="review subtask started",
+            )
+
             await self._update_agent(
                 topic_id=topic_id,
                 run_id=run_id,
@@ -605,6 +898,27 @@ class FakePipelineRunner:
             )
             await asyncio.sleep(self._step_sleep)
 
+            review_subtasks = self._patch_subtask_state(
+                review_subtasks,
+                0,
+                status="completed",
+            )
+            review_subtasks = self._patch_subtask_state(
+                review_subtasks,
+                1,
+                status="running",
+                progress=0.2,
+            )
+            active_subtasks = review_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.review,
+                stage="review",
+                subtasks=review_subtasks,
+                trace_id=trace_id,
+            )
+
             survey_content = await self._generate_text_content(
                 topic_id=topic_id,
                 run_id=run_id,
@@ -623,6 +937,27 @@ class FakePipelineRunner:
                     topic_objective=topic_objective,
                 ),
                 max_tokens=1800,
+            )
+
+            review_subtasks = self._patch_subtask_state(
+                review_subtasks,
+                1,
+                status="completed",
+            )
+            review_subtasks = self._patch_subtask_state(
+                review_subtasks,
+                2,
+                status="running",
+                progress=0.5,
+            )
+            active_subtasks = review_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.review,
+                stage="review",
+                subtasks=review_subtasks,
+                trace_id=trace_id,
             )
 
             await self._update_agent(
@@ -657,6 +992,80 @@ class FakePipelineRunner:
                 )
             )
 
+            review_subtasks = self._patch_subtask_state(
+                review_subtasks,
+                2,
+                status="completed",
+            )
+            review_subtasks = self._patch_subtask_state(
+                review_subtasks,
+                3,
+                status="completed",
+                progress=1.0,
+            )
+            for index in range(4, len(review_subtasks)):
+                review_subtasks = self._patch_subtask_state(
+                    review_subtasks,
+                    index,
+                    status="completed",
+                    progress=1.0,
+                )
+            active_subtasks = review_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.review,
+                stage="review",
+                subtasks=review_subtasks,
+                trace_id=trace_id,
+                summary="review subtasks completed",
+            )
+
+            ideas_upstream = (
+                f"{topic_anchor}\n\n"
+                "<review_survey>\n"
+                f"{survey_content}\n"
+                "</review_survey>"
+            )
+            ideation_subtasks = await self.generate_subtasks_plan(
+                AgentId.ideation,
+                "ideation",
+                topic_anchor,
+                ideas_upstream,
+                preferred_language,
+                topic_id=topic_id,
+                run_id=run_id,
+                trace_id=trace_id,
+            )
+            active_subtasks = ideation_subtasks
+            active_stage = "ideation"
+            active_agent = AgentId.ideation
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.ideation,
+                stage="ideation",
+                subtasks=ideation_subtasks,
+                trace_id=trace_id,
+                summary="ideation subtasks planned",
+            )
+            ideation_subtasks = self._patch_subtask_state(
+                ideation_subtasks,
+                0,
+                status="running",
+                progress=0.1,
+            )
+            active_subtasks = ideation_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.ideation,
+                stage="ideation",
+                subtasks=ideation_subtasks,
+                trace_id=trace_id,
+                summary="ideation subtask started",
+            )
+
             await self._update_agent(
                 topic_id=topic_id,
                 run_id=run_id,
@@ -680,11 +1089,25 @@ class FakePipelineRunner:
             )
             await asyncio.sleep(self._step_sleep)
 
-            ideas_upstream = (
-                f"{topic_anchor}\n\n"
-                "<review_survey>\n"
-                f"{survey_content}\n"
-                "</review_survey>"
+            ideation_subtasks = self._patch_subtask_state(
+                ideation_subtasks,
+                0,
+                status="completed",
+            )
+            ideation_subtasks = self._patch_subtask_state(
+                ideation_subtasks,
+                1,
+                status="running",
+                progress=0.3,
+            )
+            active_subtasks = ideation_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.ideation,
+                stage="ideation",
+                subtasks=ideation_subtasks,
+                trace_id=trace_id,
             )
             ideas_content = await self._generate_text_content(
                 topic_id=topic_id,
@@ -704,6 +1127,27 @@ class FakePipelineRunner:
                     topic_objective=topic_objective,
                 ),
                 max_tokens=1800,
+            )
+
+            ideation_subtasks = self._patch_subtask_state(
+                ideation_subtasks,
+                1,
+                status="completed",
+            )
+            ideation_subtasks = self._patch_subtask_state(
+                ideation_subtasks,
+                2,
+                status="running",
+                progress=0.65,
+            )
+            active_subtasks = ideation_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.ideation,
+                stage="ideation",
+                subtasks=ideation_subtasks,
+                trace_id=trace_id,
             )
 
             await self._update_agent(
@@ -738,6 +1182,80 @@ class FakePipelineRunner:
                 )
             )
 
+            ideation_subtasks = self._patch_subtask_state(
+                ideation_subtasks,
+                2,
+                status="completed",
+            )
+            ideation_subtasks = self._patch_subtask_state(
+                ideation_subtasks,
+                3,
+                status="completed",
+                progress=1.0,
+            )
+            for index in range(4, len(ideation_subtasks)):
+                ideation_subtasks = self._patch_subtask_state(
+                    ideation_subtasks,
+                    index,
+                    status="completed",
+                    progress=1.0,
+                )
+            active_subtasks = ideation_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.ideation,
+                stage="ideation",
+                subtasks=ideation_subtasks,
+                trace_id=trace_id,
+                summary="ideation subtasks completed",
+            )
+
+            experiment_upstream = (
+                f"{topic_anchor}\n\n"
+                "<ideas_input>\n"
+                f"{ideas_content}\n"
+                "</ideas_input>"
+            )
+            experiment_subtasks = await self.generate_subtasks_plan(
+                AgentId.experiment,
+                "experiment",
+                topic_anchor,
+                experiment_upstream,
+                preferred_language,
+                topic_id=topic_id,
+                run_id=run_id,
+                trace_id=trace_id,
+            )
+            active_subtasks = experiment_subtasks
+            active_stage = "experiment"
+            active_agent = AgentId.experiment
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.experiment,
+                stage="experiment",
+                subtasks=experiment_subtasks,
+                trace_id=trace_id,
+                summary="experiment subtasks planned",
+            )
+            experiment_subtasks = self._patch_subtask_state(
+                experiment_subtasks,
+                0,
+                status="running",
+                progress=0.1,
+            )
+            active_subtasks = experiment_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.experiment,
+                stage="experiment",
+                subtasks=experiment_subtasks,
+                trace_id=trace_id,
+                summary="experiment subtask started",
+            )
+
             await self._update_agent(
                 topic_id=topic_id,
                 run_id=run_id,
@@ -761,6 +1279,27 @@ class FakePipelineRunner:
             )
             await asyncio.sleep(self._step_sleep)
 
+            experiment_subtasks = self._patch_subtask_state(
+                experiment_subtasks,
+                0,
+                status="completed",
+            )
+            experiment_subtasks = self._patch_subtask_state(
+                experiment_subtasks,
+                1,
+                status="running",
+                progress=0.25,
+            )
+            active_subtasks = experiment_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.experiment,
+                stage="experiment",
+                subtasks=experiment_subtasks,
+                trace_id=trace_id,
+            )
+
             await self._emit(
                 build_event(
                     topic_id=topic_id,
@@ -774,6 +1313,30 @@ class FakePipelineRunner:
                 )
             )
             await asyncio.sleep(self._step_sleep)
+
+            experiment_subtasks = self._patch_subtask_state(
+                experiment_subtasks,
+                1,
+                status="failed",
+                progress=0.45,
+            )
+            experiment_subtasks = self._patch_subtask_state(
+                experiment_subtasks,
+                2,
+                status="running",
+                progress=0.55,
+            )
+            active_subtasks = experiment_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.experiment,
+                stage="experiment",
+                subtasks=experiment_subtasks,
+                trace_id=trace_id,
+                severity=Severity.warn,
+                summary="experiment subtask failed and switched to retry path",
+            )
 
             fallback_results = {
                 "topicId": topic_id,
@@ -790,12 +1353,6 @@ class FakePipelineRunner:
                     "Track quality-cost tradeoff in production-like environment",
                 ],
             }
-            experiment_upstream = (
-                f"{topic_anchor}\n\n"
-                "<ideas_input>\n"
-                f"{ideas_content}\n"
-                "</ideas_input>"
-            )
             results_content = await self._generate_json_content(
                 topic_id=topic_id,
                 run_id=run_id,
@@ -822,6 +1379,27 @@ class FakePipelineRunner:
             next_actions = results_content.get("next_actions")
             if not isinstance(next_actions, list):
                 results_content["next_actions"] = fallback_results["next_actions"]
+
+            experiment_subtasks = self._patch_subtask_state(
+                experiment_subtasks,
+                2,
+                status="completed",
+            )
+            experiment_subtasks = self._patch_subtask_state(
+                experiment_subtasks,
+                3,
+                status="running",
+                progress=0.7,
+            )
+            active_subtasks = experiment_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.experiment,
+                stage="experiment",
+                subtasks=experiment_subtasks,
+                trace_id=trace_id,
+            )
 
             result_report_content = await self._generate_text_content(
                 topic_id=topic_id,
@@ -850,6 +1428,29 @@ class FakePipelineRunner:
                     metrics=metrics,
                 ),
                 max_tokens=1800,
+            )
+
+            experiment_subtasks = self._patch_subtask_state(
+                experiment_subtasks,
+                3,
+                status="completed",
+            )
+            for index in range(4, len(experiment_subtasks)):
+                experiment_subtasks = self._patch_subtask_state(
+                    experiment_subtasks,
+                    index,
+                    status="completed",
+                    progress=1.0,
+                )
+            active_subtasks = experiment_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.experiment,
+                stage="experiment",
+                subtasks=experiment_subtasks,
+                trace_id=trace_id,
+                summary="experiment subtasks completed",
             )
 
             await self._update_agent(
@@ -904,6 +1505,54 @@ class FakePipelineRunner:
                 )
             )
 
+            feedback_upstream = (
+                f"{topic_anchor}\n\n"
+                "<result_json>\n"
+                f"{json.dumps(results_content, ensure_ascii=False, indent=2)}\n"
+                "</result_json>\n\n"
+                "<result_report>\n"
+                f"{result_report_content}\n"
+                "</result_report>"
+            )
+            feedback_subtasks = await self.generate_subtasks_plan(
+                AgentId.ideation,
+                "feedback",
+                topic_anchor,
+                feedback_upstream,
+                preferred_language,
+                topic_id=topic_id,
+                run_id=run_id,
+                trace_id=trace_id,
+            )
+            active_subtasks = feedback_subtasks
+            active_stage = "feedback"
+            active_agent = AgentId.ideation
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.ideation,
+                stage="feedback",
+                subtasks=feedback_subtasks,
+                trace_id=trace_id,
+                summary="feedback subtasks planned",
+            )
+            feedback_subtasks = self._patch_subtask_state(
+                feedback_subtasks,
+                0,
+                status="running",
+                progress=0.2,
+            )
+            active_subtasks = feedback_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.ideation,
+                stage="feedback",
+                subtasks=feedback_subtasks,
+                trace_id=trace_id,
+                summary="feedback subtask started",
+            )
+
             await self._update_agent(
                 topic_id=topic_id,
                 run_id=run_id,
@@ -926,6 +1575,27 @@ class FakePipelineRunner:
                 )
             )
             await asyncio.sleep(self._step_sleep)
+
+            feedback_subtasks = self._patch_subtask_state(
+                feedback_subtasks,
+                0,
+                status="completed",
+            )
+            feedback_subtasks = self._patch_subtask_state(
+                feedback_subtasks,
+                1,
+                status="running",
+                progress=0.5,
+            )
+            active_subtasks = feedback_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.ideation,
+                stage="feedback",
+                subtasks=feedback_subtasks,
+                trace_id=trace_id,
+            )
 
             feedback_fallback = self._pick_by_lang(
                 preferred_language,
@@ -967,6 +1637,52 @@ class FakePipelineRunner:
                 max_tokens=1000,
             )
 
+            feedback_subtasks = self._patch_subtask_state(
+                feedback_subtasks,
+                1,
+                status="completed",
+            )
+            feedback_subtasks = self._patch_subtask_state(
+                feedback_subtasks,
+                2,
+                status="running",
+                progress=0.82,
+            )
+            active_subtasks = feedback_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.ideation,
+                stage="feedback",
+                subtasks=feedback_subtasks,
+                trace_id=trace_id,
+            )
+
+            await asyncio.sleep(self._step_sleep * 0.5)
+
+            feedback_subtasks = self._patch_subtask_state(
+                feedback_subtasks,
+                2,
+                status="completed",
+            )
+            for index in range(3, len(feedback_subtasks)):
+                feedback_subtasks = self._patch_subtask_state(
+                    feedback_subtasks,
+                    index,
+                    status="completed",
+                    progress=1.0,
+                )
+            active_subtasks = feedback_subtasks
+            await self._emit_subtasks_update(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=AgentId.ideation,
+                stage="feedback",
+                subtasks=feedback_subtasks,
+                trace_id=trace_id,
+                summary="feedback subtasks completed",
+            )
+
             await self._update_agent(
                 topic_id=topic_id,
                 run_id=run_id,
@@ -997,10 +1713,32 @@ class FakePipelineRunner:
             except Exception:
                 return
 
+            failed_agent = active_agent or AgentId.experiment
+            failed_stage: StageName = active_stage or "experiment"
+            failed_subtasks = self._mark_running_subtasks_failed(active_subtasks or [])
+            if failed_subtasks:
+                try:
+                    await self._emit_subtasks_update(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=failed_agent,
+                        stage=failed_stage,
+                        subtasks=failed_subtasks,
+                        trace_id=trace_id,
+                        severity=Severity.error,
+                        summary=f"{failed_stage} subtasks failed due to pipeline crash",
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to emit subtask failure update (topic=%s run=%s)",
+                        topic_id,
+                        run_id,
+                    )
+
             await self._update_agent(
                 topic_id=topic_id,
                 run_id=run_id,
-                agent_id=AgentId.experiment,
+                agent_id=failed_agent,
                 status="failed",
                 progress=1.0,
                 summary="pipeline failed",
@@ -1010,7 +1748,7 @@ class FakePipelineRunner:
                 build_event(
                     topic_id=topic_id,
                     run_id=run_id,
-                    agent_id=AgentId.experiment,
+                    agent_id=failed_agent,
                     kind=EventKind.event_emitted,
                     severity=Severity.error,
                     summary="pipeline crashed",

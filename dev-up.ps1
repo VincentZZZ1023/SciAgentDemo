@@ -4,7 +4,9 @@ param(
   [switch]$OpenBrowser,
   [switch]$DryRun,
   [switch]$Stop,
+  [switch]$Status,
   [switch]$Restart,
+  [switch]$Quick,
   [switch]$NoRestart,
   [switch]$ForceCleanPorts,
   [switch]$RequireDeepSeek,
@@ -21,12 +23,32 @@ $StateDir = Join-Path $RepoRoot ".dev"
 $PidFile = Join-Path $StateDir "dev-up.pids.json"
 $BackendPort = 8000
 $FrontendPort = 5173
-$AutoRestart = ($Restart -or (-not $NoRestart)) -and (-not $DryRun)
+
+$EffectiveRestart = $Restart -or $Quick -or (-not $NoRestart)
+$EffectiveForceCleanPorts = $ForceCleanPorts -or $Quick
+$EffectiveOpenBrowser = $OpenBrowser -or $Quick
+$AutoRestart = $EffectiveRestart -and (-not $DryRun)
+
+if ($Quick) {
+  Write-Host "[dev-up] Quick mode enabled: restart + force-clean ports + open browser." -ForegroundColor Cyan
+}
 
 function Require-Command {
   param([string]$Name)
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
     throw "Missing command '$Name'. Please install it and retry."
+  }
+}
+
+function Test-PythonModule {
+  param([string]$ModuleName)
+
+  try {
+    & python -c "import $ModuleName" *> $null
+    return ($LASTEXITCODE -eq 0)
+  }
+  catch {
+    return $false
   }
 }
 
@@ -303,6 +325,34 @@ function ShouldAutoCleanPortOwners {
   return $true
 }
 
+function Stop-PortOwnersIfLikely {
+  param(
+    [int]$Port,
+    [string]$Label
+  )
+
+  $owners = @(Get-PortOwnerPids -Port $Port)
+  if ($owners.Count -eq 0) {
+    return
+  }
+
+  $stoppedAny = $false
+  foreach ($ownerPid in $owners) {
+    $pidInt = [int]$ownerPid
+    if (-not (Is-ProcessAlive -ProcessId $pidInt)) {
+      continue
+    }
+    if (Is-LikelySciAgentPortOwner -Port $Port -ProcessId $pidInt) {
+      Stop-ProcessSafe -ProcessId $pidInt -Label "$Label(port-$Port)"
+      $stoppedAny = $true
+    }
+  }
+
+  if ($stoppedAny) {
+    Start-Sleep -Milliseconds 300
+  }
+}
+
 function Ensure-PortAvailable {
   param(
     [int]$Port,
@@ -450,8 +500,51 @@ function Wait-HttpReady {
   return $false
 }
 
+function Test-HttpReadyOnce {
+  param(
+    [string]$Url,
+    [int]$TimeoutSec = 3
+  )
+
+  try {
+    Invoke-RestMethod -Uri $Url -Method Get -TimeoutSec $TimeoutSec -ErrorAction Stop | Out-Null
+    return $true
+  }
+  catch {
+    return $false
+  }
+}
+
+function Show-DevStatus {
+  $backendHealthy = Test-HttpReadyOnce -Url "http://127.0.0.1:$BackendPort/api/health" -TimeoutSec 2
+  $frontendHealthy = Test-HttpReadyOnce -Url "http://127.0.0.1:$FrontendPort" -TimeoutSec 2
+  $backendOwners = @(Get-PortOwnerPids -Port $BackendPort)
+  $frontendOwners = @(Get-PortOwnerPids -Port $FrontendPort)
+  $tracked = Load-Pids
+
+  Write-Host "[dev-up] Status" -ForegroundColor Cyan
+  Write-Host ("  backend  : {0} (port {1}, owners: {2})" -f ($(if ($backendHealthy) { "up" } else { "down" }), $BackendPort, $(if ($backendOwners.Count -gt 0) { $backendOwners -join "," } else { "none" })))
+  Write-Host ("  frontend : {0} (port {1}, owners: {2})" -f ($(if ($frontendHealthy) { "up" } else { "down" }), $FrontendPort, $(if ($frontendOwners.Count -gt 0) { $frontendOwners -join "," } else { "none" })))
+
+  if ($null -ne $tracked) {
+    Write-Host ("  tracked  : backendPid={0}, frontendPid={1}" -f $tracked.backendPid, $tracked.frontendPid)
+  }
+  else {
+    Write-Host "  tracked  : none"
+  }
+}
+
 if ($Stop) {
   Stop-DevProcesses
+  Stop-PortOwnersIfLikely -Port $BackendPort -Label "backend"
+  Stop-PortOwnersIfLikely -Port $FrontendPort -Label "frontend"
+  Remove-PidFile
+  Write-Host "[dev-up] Stop complete." -ForegroundColor Yellow
+  exit 0
+}
+
+if ($Status) {
+  Show-DevStatus
   exit 0
 }
 
@@ -505,13 +598,34 @@ if (-not $DryRun) {
   }
 }
 
-if ($InstallDeps) {
+$backendRequirements = Join-Path $BackendDir "requirements.txt"
+$frontendNodeModules = Join-Path $FrontendDir "node_modules"
+
+$needBackendDeps = $InstallDeps
+$needFrontendDeps = $InstallDeps
+
+if (-not $InstallDeps) {
+  if (-not (Test-PythonModule -ModuleName "uvicorn")) {
+    $needBackendDeps = $true
+  }
+  if (-not (Test-Path $frontendNodeModules)) {
+    $needFrontendDeps = $true
+  }
+
+  if ($needBackendDeps -or $needFrontendDeps) {
+    Write-Host "[dev-up] Missing dependencies detected. Auto-installing required packages..." -ForegroundColor Yellow
+  }
+}
+
+if ($needBackendDeps) {
   Write-Host "[setup] Installing backend dependencies..." -ForegroundColor Cyan
-  & python -m pip install -r (Join-Path $BackendDir "requirements.txt")
+  & python -m pip install -r $backendRequirements
   if ($LASTEXITCODE -ne 0) {
     throw "Backend dependency install failed."
   }
+}
 
+if ($needFrontendDeps) {
   Write-Host "[setup] Installing frontend dependencies..." -ForegroundColor Cyan
   Push-Location $FrontendDir
   try {
@@ -525,9 +639,31 @@ if ($InstallDeps) {
   }
 }
 
+$ReuseBackend = $false
+$ReuseFrontend = $false
+
 if (-not $DryRun) {
-  Ensure-PortAvailable -Port $BackendPort -Label "backend" -Force:$ForceCleanPorts
-  Ensure-PortAvailable -Port $FrontendPort -Label "frontend" -Force:$ForceCleanPorts
+  if (Test-PortBindable -Port $BackendPort) {
+    # Backend port is free, start a new backend process.
+  }
+  elseif (Test-HttpReadyOnce -Url "http://127.0.0.1:$BackendPort/api/health" -TimeoutSec 2) {
+    $ReuseBackend = $true
+    Write-Host "[dev-up] Reusing existing backend on http://localhost:$BackendPort" -ForegroundColor DarkYellow
+  }
+  else {
+    Ensure-PortAvailable -Port $BackendPort -Label "backend" -Force:$EffectiveForceCleanPorts
+  }
+
+  if (Test-PortBindable -Port $FrontendPort) {
+    # Frontend port is free, start a new frontend process.
+  }
+  elseif (Test-HttpReadyOnce -Url "http://127.0.0.1:$FrontendPort" -TimeoutSec 2) {
+    $ReuseFrontend = $true
+    Write-Host "[dev-up] Reusing existing frontend on http://localhost:$FrontendPort" -ForegroundColor DarkYellow
+  }
+  else {
+    Ensure-PortAvailable -Port $FrontendPort -Label "frontend" -Force:$EffectiveForceCleanPorts
+  }
 }
 
 $backendCommand = @"
@@ -556,21 +692,61 @@ if ($DryRun) {
   exit 0
 }
 
-$backendProc = Start-Process -FilePath "powershell" -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -PassThru
-Start-Sleep -Milliseconds 500
-$frontendProc = Start-Process -FilePath "powershell" -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $frontendCommand) -PassThru
+$backendProc = $null
+$frontendProc = $null
 
-Save-Pids -BackendPid $backendProc.Id -FrontendPid $frontendProc.Id
+if (-not $ReuseBackend) {
+  $backendProc = Start-Process -FilePath "powershell" -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -PassThru
+  Start-Sleep -Milliseconds 500
+}
 
-Write-Host "[dev-up] Backend PID:  $($backendProc.Id)" -ForegroundColor Green
-Write-Host "[dev-up] Frontend PID: $($frontendProc.Id)" -ForegroundColor Green
+if (-not $ReuseFrontend) {
+  $frontendProc = Start-Process -FilePath "powershell" -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $frontendCommand) -PassThru
+}
+
+$backendPid = if ($null -ne $backendProc) { [int]$backendProc.Id } else { 0 }
+$frontendPid = if ($null -ne $frontendProc) { [int]$frontendProc.Id } else { 0 }
+Save-Pids -BackendPid $backendPid -FrontendPid $frontendPid
+
+if ($backendPid -gt 0) {
+  Write-Host "[dev-up] Backend PID:  $backendPid" -ForegroundColor Green
+}
+else {
+  Write-Host "[dev-up] Backend PID:  reused-existing" -ForegroundColor Green
+}
+
+if ($frontendPid -gt 0) {
+  Write-Host "[dev-up] Frontend PID: $frontendPid" -ForegroundColor Green
+}
+else {
+  Write-Host "[dev-up] Frontend PID: reused-existing" -ForegroundColor Green
+}
+
 Write-Host "[dev-up] Backend URL:  http://localhost:$BackendPort" -ForegroundColor Green
 Write-Host "[dev-up] Frontend URL: http://localhost:$FrontendPort" -ForegroundColor Green
 Write-Host "[dev-up] Stop command: .\dev-up.ps1 -Stop" -ForegroundColor Green
 
-$watchPids = @($backendProc.Id, $frontendProc.Id)
-$backendReady = Wait-HttpReady -Url "http://127.0.0.1:$BackendPort/api/health" -Label "backend" -TimeoutSec $ReadyTimeoutSec -WatchPids $watchPids
-$frontendReady = Wait-HttpReady -Url "http://127.0.0.1:$FrontendPort" -Label "frontend" -TimeoutSec $ReadyTimeoutSec -WatchPids $watchPids
+$watchPids = @()
+if ($backendPid -gt 0) {
+  $watchPids += $backendPid
+}
+if ($frontendPid -gt 0) {
+  $watchPids += $frontendPid
+}
+
+if ($ReuseBackend) {
+  $backendReady = Test-HttpReadyOnce -Url "http://127.0.0.1:$BackendPort/api/health" -TimeoutSec 5
+}
+else {
+  $backendReady = Wait-HttpReady -Url "http://127.0.0.1:$BackendPort/api/health" -Label "backend" -TimeoutSec $ReadyTimeoutSec -WatchPids $watchPids
+}
+
+if ($ReuseFrontend) {
+  $frontendReady = Test-HttpReadyOnce -Url "http://127.0.0.1:$FrontendPort" -TimeoutSec 5
+}
+else {
+  $frontendReady = Wait-HttpReady -Url "http://127.0.0.1:$FrontendPort" -Label "frontend" -TimeoutSec $ReadyTimeoutSec -WatchPids $watchPids
+}
 
 if ($backendReady -and $frontendReady) {
   Write-Host "[dev-up] Services are ready." -ForegroundColor Green
@@ -579,6 +755,6 @@ else {
   Write-Warning "[dev-up] Services did not become ready in $ReadyTimeoutSec seconds. Check the opened terminals."
 }
 
-if ($OpenBrowser) {
+if ($EffectiveOpenBrowser) {
   Start-Process "http://localhost:$FrontendPort"
 }
