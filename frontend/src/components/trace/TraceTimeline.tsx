@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { fetchArtifactContent } from "../../api/client";
+import { ArtifactContentView } from "../artifact/ArtifactContentView";
 import {
   isArtifact,
   isMessage,
@@ -267,7 +268,13 @@ export const TraceTimeline = ({ items, artifacts, loading, error }: TraceTimelin
             <div className="artifact-modal-body">
               {artifactLoading ? <p>Loading artifact...</p> : null}
               {!artifactLoading && artifactError ? <p className="form-error">{artifactError}</p> : null}
-              {!artifactLoading && !artifactError ? <pre>{artifactContent || "(empty)"}</pre> : null}
+              {!artifactLoading && !artifactError ? (
+                <ArtifactContentView
+                  contentType={artifactContentType}
+                  content={artifactContent}
+                  artifactName={selectedArtifactName}
+                />
+              ) : null}
             </div>
           </div>
           <button type="button" className="artifact-modal-backdrop" onClick={closeArtifactPreview} />

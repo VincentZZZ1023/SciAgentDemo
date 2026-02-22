@@ -4,6 +4,7 @@ import {
   getAgentMessages,
   postAgentMessage,
 } from "../../api/client";
+import { ArtifactContentView } from "../artifact/ArtifactContentView";
 import {
   parseMessageFromEvent,
   type AgentId,
@@ -48,17 +49,6 @@ const inferArtifactAgent = (artifact: Artifact): AgentId => {
     return "ideation";
   }
   return "experiment";
-};
-
-const formatArtifactContent = (contentType: string, raw: string): string => {
-  if (contentType.includes("application/json")) {
-    try {
-      return JSON.stringify(JSON.parse(raw), null, 2);
-    } catch {
-      return raw;
-    }
-  }
-  return raw;
 };
 
 const mergeMessages = (current: Message[], incoming: Message[]): Message[] => {
@@ -186,11 +176,6 @@ export const AgentDrawer = ({
       .slice(-3)
       .reverse();
   }, [chatMessages]);
-
-  const renderedArtifactContent = useMemo(
-    () => formatArtifactContent(artifactContentType, artifactContent),
-    [artifactContent, artifactContentType],
-  );
 
   useEffect(() => {
     if (!open || !agentId) {
@@ -534,7 +519,13 @@ export const AgentDrawer = ({
             <div className="artifact-modal-body">
               {artifactLoading ? <p>Loading artifact...</p> : null}
               {!artifactLoading && artifactError ? <p className="form-error">{artifactError}</p> : null}
-              {!artifactLoading && !artifactError ? <pre>{renderedArtifactContent || "(empty)"}</pre> : null}
+              {!artifactLoading && !artifactError ? (
+                <ArtifactContentView
+                  contentType={artifactContentType}
+                  content={artifactContent}
+                  artifactName={selectedArtifact?.name}
+                />
+              ) : null}
             </div>
           </div>
           <button type="button" className="artifact-modal-backdrop" onClick={closeArtifactModal} />

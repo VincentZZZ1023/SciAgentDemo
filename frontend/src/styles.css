@@ -1178,6 +1178,109 @@ p {
   word-break: break-word;
 }
 
+.artifact-renderer {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-soft);
+  color: var(--text);
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.artifact-renderer-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.artifact-renderer-markdown {
+  overflow-wrap: anywhere;
+}
+
+.artifact-renderer-markdown > :first-child {
+  margin-top: 0;
+}
+
+.artifact-renderer-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.artifact-renderer-markdown h1,
+.artifact-renderer-markdown h2,
+.artifact-renderer-markdown h3,
+.artifact-renderer-markdown h4 {
+  margin: 14px 0 8px;
+  line-height: 1.35;
+}
+
+.artifact-renderer-markdown p {
+  margin: 8px 0;
+}
+
+.artifact-renderer-markdown ul,
+.artifact-renderer-markdown ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.artifact-renderer-markdown li + li {
+  margin-top: 4px;
+}
+
+.artifact-renderer-markdown blockquote {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--primary);
+  background: color-mix(in srgb, var(--primary-soft) 36%, var(--panel));
+  border-radius: 0 8px 8px 0;
+}
+
+.artifact-renderer-markdown code {
+  background: color-mix(in srgb, var(--panel) 90%, #000);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.artifact-renderer-markdown pre {
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px;
+  overflow: auto;
+}
+
+.artifact-renderer-markdown pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+.artifact-renderer-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+}
+
+.artifact-renderer-markdown th,
+.artifact-renderer-markdown td {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.artifact-renderer-markdown a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
 @media (max-width: 1024px) {
   .app-shell {
     grid-template-columns: 280px 1fr;

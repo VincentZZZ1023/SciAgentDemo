@@ -10,6 +10,7 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import { fetchArtifactContent } from "../../api/client";
+import { ArtifactContentView } from "../artifact/ArtifactContentView";
 import { useTheme } from "../../theme/ThemeProvider";
 import {
   AGENT_IDS,
@@ -117,17 +118,6 @@ const resolveArtifactForItem = (item: TraceItem, artifacts: Artifact[]): Artifac
   }
 
   return null;
-};
-
-const formatArtifactContent = (contentType: string, raw: string): string => {
-  if (contentType.includes("application/json")) {
-    try {
-      return JSON.stringify(JSON.parse(raw), null, 2);
-    } catch {
-      return raw;
-    }
-  }
-  return raw;
 };
 
 interface GraphModel {
@@ -318,11 +308,6 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
     return resolveArtifactForItem(selectedItem, artifacts);
   }, [artifacts, selectedItem]);
 
-  const renderedPreviewContent = useMemo(
-    () => formatArtifactContent(previewContentType, previewContent),
-    [previewContent, previewContentType],
-  );
-
   useEffect(() => {
     if (!selectedNodeId) {
       return;
@@ -468,7 +453,13 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
                     </button>
                   ) : null}
                   {previewError ? <p className="form-error">{previewError}</p> : null}
-                  {previewContent ? <pre>{renderedPreviewContent}</pre> : null}
+                  {previewContent ? (
+                    <ArtifactContentView
+                      contentType={previewContentType}
+                      content={previewContent}
+                      artifactName={selectedArtifact?.name}
+                    />
+                  ) : null}
                 </section>
               ) : null}
 
@@ -494,4 +485,3 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
     </div>
   );
 };
-

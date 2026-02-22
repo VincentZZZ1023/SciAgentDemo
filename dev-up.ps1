@@ -6,6 +6,7 @@ param(
   [switch]$Stop,
   [switch]$Status,
   [switch]$Restart,
+  [switch]$OneClick,
   [switch]$Quick,
   [switch]$NoRestart,
   [switch]$ForceCleanPorts,
@@ -24,10 +25,19 @@ $PidFile = Join-Path $StateDir "dev-up.pids.json"
 $BackendPort = 8000
 $FrontendPort = 5173
 
-$EffectiveRestart = $Restart -or $Quick -or (-not $NoRestart)
-$EffectiveForceCleanPorts = $ForceCleanPorts -or $Quick
-$EffectiveOpenBrowser = $OpenBrowser -or $Quick
+$AutoOneClick = ($PSBoundParameters.Count -eq 0)
+if ($AutoOneClick) {
+  $OneClick = $true
+}
+
+$EffectiveRestart = $Restart -or $Quick -or $OneClick -or (-not $NoRestart)
+$EffectiveForceCleanPorts = $ForceCleanPorts -or $Quick -or $OneClick
+$EffectiveOpenBrowser = $OpenBrowser -or $Quick -or $OneClick
 $AutoRestart = $EffectiveRestart -and (-not $DryRun)
+
+if ($OneClick -and -not $Quick) {
+  Write-Host "[dev-up] One-click mode enabled: restart + force-clean ports + open browser." -ForegroundColor Cyan
+}
 
 if ($Quick) {
   Write-Host "[dev-up] Quick mode enabled: restart + force-clean ports + open browser." -ForegroundColor Cyan
