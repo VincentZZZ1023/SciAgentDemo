@@ -1,157 +1,320 @@
 [
   {
-    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40001",
-    "ts": 1771462800000,
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f41001",
+    "ts": 1772158200000,
     "topicId": "topic-neural-symbolic-discovery",
-    "runId": "run-20260219-001",
+    "runId": "run-20260227-001",
+    "agentId": "review",
+    "kind": "event_emitted",
+    "severity": "info",
+    "summary": "run started",
+    "payload": {
+      "trigger": "manual"
+    },
+    "traceId": "trace-run-20260227-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f41002",
+    "ts": 1772158202000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260227-001",
+    "agentId": "review",
+    "kind": "module_started",
+    "severity": "info",
+    "summary": "review module started",
+    "payload": {
+      "runId": "run-20260227-001",
+      "topicId": "topic-neural-symbolic-discovery",
+      "module": "review",
+      "model": "deepseek-chat",
+      "thinkingMode": "deep",
+      "online": true
+    },
+    "traceId": "trace-run-20260227-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f41003",
+    "ts": 1772158205000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260227-001",
     "agentId": "review",
     "kind": "agent_status_updated",
     "severity": "info",
-    "summary": "review 开始检索相关文献并构建初步 survey",
+    "summary": "review running",
     "payload": {
       "status": "running",
-      "progress": 0.18,
-      "focus": "神经符号方法在科学发现中的应用"
+      "progress": 0.2
     },
-    "traceId": "trace-run-20260219-001"
+    "traceId": "trace-run-20260227-001"
   },
   {
-    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40002",
-    "ts": 1771462865000,
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f41004",
+    "ts": 1772158215000,
     "topicId": "topic-neural-symbolic-discovery",
-    "runId": "run-20260219-001",
+    "runId": "run-20260227-001",
     "agentId": "review",
     "kind": "artifact_created",
     "severity": "info",
-    "summary": "review 产出 survey.md，等待发送给 ideation",
+    "summary": "review produced survey.md",
     "payload": {
       "stage": "review_to_ideation",
-      "handoffTo": "ideation",
-      "artifactRole": "survey"
+      "handoffTo": "ideation"
     },
     "artifacts": [
       {
         "artifactId": "art-survey-001",
         "name": "survey.md",
-        "uri": "artifact://topic-neural-symbolic-discovery/run-20260219-001/survey.md",
+        "uri": "/api/topics/topic-neural-symbolic-discovery/artifacts/survey.md",
         "contentType": "text/markdown"
       }
     ],
-    "traceId": "trace-run-20260219-001"
+    "traceId": "trace-run-20260227-001"
   },
   {
-    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40003",
-    "ts": 1771462871000,
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f41005",
+    "ts": 1772158219000,
     "topicId": "topic-neural-symbolic-discovery",
-    "runId": "run-20260219-001",
+    "runId": "run-20260227-001",
     "agentId": "review",
-    "kind": "event_emitted",
+    "kind": "module_finished",
     "severity": "info",
-    "summary": "review 已将 survey 发给 ideation",
+    "summary": "review module finished",
     "payload": {
-      "eventType": "handoff",
-      "fromAgent": "review",
-      "toAgent": "ideation",
-      "artifactId": "art-survey-001"
+      "runId": "run-20260227-001",
+      "module": "review",
+      "status": "success",
+      "artifactNames": [
+        "survey.md"
+      ],
+      "metrics": {
+        "papersAnalyzed": 23
+      }
     },
-    "traceId": "trace-run-20260219-001"
+    "traceId": "trace-run-20260227-001"
   },
   {
-    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40004",
-    "ts": 1771462910000,
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f41006",
+    "ts": 1772158221000,
     "topicId": "topic-neural-symbolic-discovery",
-    "runId": "run-20260219-001",
+    "runId": "run-20260227-001",
+    "agentId": "ideation",
+    "kind": "module_started",
+    "severity": "info",
+    "summary": "ideation module started",
+    "payload": {
+      "runId": "run-20260227-001",
+      "topicId": "topic-neural-symbolic-discovery",
+      "module": "ideation",
+      "model": "deepseek-chat",
+      "thinkingMode": "deep",
+      "online": true
+    },
+    "traceId": "trace-run-20260227-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f41007",
+    "ts": 1772158227000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260227-001",
     "agentId": "ideation",
     "kind": "artifact_created",
     "severity": "info",
-    "summary": "ideation 生成 idea.json 并选定可实验假设",
+    "summary": "ideation produced ideas.md",
     "payload": {
       "stage": "ideation_to_experiment",
-      "handoffTo": "experiment",
-      "selectedIdeaId": "idea-2"
+      "handoffTo": "experiment"
     },
     "artifacts": [
       {
-        "artifactId": "art-idea-001",
-        "name": "idea.json",
-        "uri": "artifact://topic-neural-symbolic-discovery/run-20260219-001/idea.json",
-        "contentType": "application/json"
+        "artifactId": "art-ideas-001",
+        "name": "ideas.md",
+        "uri": "/api/topics/topic-neural-symbolic-discovery/artifacts/ideas.md",
+        "contentType": "text/markdown"
       }
     ],
-    "traceId": "trace-run-20260219-001"
+    "traceId": "trace-run-20260227-001"
   },
   {
-    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40005",
-    "ts": 1771462922000,
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f41008",
+    "ts": 1772158231000,
     "topicId": "topic-neural-symbolic-discovery",
-    "runId": "run-20260219-001",
+    "runId": "run-20260227-001",
     "agentId": "ideation",
-    "kind": "event_emitted",
+    "kind": "module_finished",
     "severity": "info",
-    "summary": "ideation 已将 idea 发给 experiment",
+    "summary": "ideation module finished",
     "payload": {
-      "eventType": "handoff",
-      "fromAgent": "ideation",
-      "toAgent": "experiment",
-      "artifactId": "art-idea-001"
+      "runId": "run-20260227-001",
+      "module": "ideation",
+      "status": "success",
+      "artifactNames": [
+        "ideas.md"
+      ]
     },
-    "traceId": "trace-run-20260219-001"
+    "traceId": "trace-run-20260227-001"
   },
   {
-    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40006",
-    "ts": 1771462980000,
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f41009",
+    "ts": 1772158234000,
     "topicId": "topic-neural-symbolic-discovery",
-    "runId": "run-20260219-001",
+    "runId": "run-20260227-001",
     "agentId": "experiment",
-    "kind": "agent_status_updated",
-    "severity": "error",
-    "summary": "experiment 首次实验失败：参数组合不收敛",
+    "kind": "module_started",
+    "severity": "info",
+    "summary": "experiment module started",
     "payload": {
-      "status": "failed",
-      "errorCode": "SIM_NOT_CONVERGED",
+      "runId": "run-20260227-001",
+      "topicId": "topic-neural-symbolic-discovery",
+      "module": "experiment",
+      "model": "deepseek-chat",
+      "thinkingMode": "deep",
+      "online": true
+    },
+    "traceId": "trace-run-20260227-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f4100a",
+    "ts": 1772158239000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260227-001",
+    "agentId": "experiment",
+    "kind": "module_failed",
+    "severity": "error",
+    "summary": "experiment module failed on first attempt",
+    "payload": {
+      "runId": "run-20260227-001",
+      "module": "experiment",
+      "error": {
+        "message": "GPU memory exceeded during simulation",
+        "code": "OOM_SIM"
+      },
       "retryable": true
     },
-    "traceId": "trace-run-20260219-001"
+    "traceId": "trace-run-20260227-001"
   },
   {
-    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40007",
-    "ts": 1771463040000,
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f4100b",
+    "ts": 1772158242000,
     "topicId": "topic-neural-symbolic-discovery",
-    "runId": "run-20260219-001",
+    "runId": "run-20260227-001",
+    "agentId": "experiment",
+    "kind": "approval_required",
+    "severity": "warn",
+    "summary": "human approval required before re-running expensive experiment",
+    "payload": {
+      "runId": "run-20260227-001",
+      "module": "experiment",
+      "summary": "Estimated compute cost exceeds configured budget.",
+      "draftArtifact": {
+        "name": "result_draft.md",
+        "mimeType": "text/markdown",
+        "sizeBytes": 2198
+      }
+    },
+    "traceId": "trace-run-20260227-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f4100c",
+    "ts": 1772158247000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260227-001",
+    "agentId": "experiment",
+    "kind": "approval_resolved",
+    "severity": "info",
+    "summary": "approval resolved by admin",
+    "payload": {
+      "runId": "run-20260227-001",
+      "module": "experiment",
+      "approved": true,
+      "note": "Proceed with one retry only."
+    },
+    "traceId": "trace-run-20260227-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f4100d",
+    "ts": 1772158253000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260227-001",
     "agentId": "experiment",
     "kind": "artifact_created",
     "severity": "info",
-    "summary": "experiment 重试后产出 results.json",
+    "summary": "experiment produced results.json",
     "payload": {
       "stage": "experiment_to_ideation_feedback",
-      "handoffTo": "ideation",
-      "resultQuality": "usable"
+      "handoffTo": "ideation"
     },
     "artifacts": [
       {
         "artifactId": "art-results-001",
         "name": "results.json",
-        "uri": "artifact://topic-neural-symbolic-discovery/run-20260219-001/results.json",
+        "uri": "/api/topics/topic-neural-symbolic-discovery/artifacts/results.json",
         "contentType": "application/json"
       }
     ],
-    "traceId": "trace-run-20260219-001"
+    "traceId": "trace-run-20260227-001"
   },
   {
-    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f40008",
-    "ts": 1771463046000,
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f4100e",
+    "ts": 1772158258000,
     "topicId": "topic-neural-symbolic-discovery",
-    "runId": "run-20260219-001",
+    "runId": "run-20260227-001",
     "agentId": "experiment",
-    "kind": "event_emitted",
+    "kind": "module_finished",
     "severity": "info",
-    "summary": "experiment 将 results 反馈给 ideation 进行下一轮改进",
+    "summary": "experiment module finished",
     "payload": {
-      "eventType": "feedback",
-      "fromAgent": "experiment",
-      "toAgent": "ideation",
-      "artifactId": "art-results-001"
+      "runId": "run-20260227-001",
+      "module": "experiment",
+      "status": "success",
+      "artifactNames": [
+        "results.json",
+        "result.md"
+      ],
+      "metrics": {
+        "f1": 0.73,
+        "latencyMs": 184
+      }
     },
-    "traceId": "trace-run-20260219-001"
+    "traceId": "trace-run-20260227-001"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f4100f",
+    "ts": 1772158263000,
+    "topicId": "topic-neural-symbolic-discovery",
+    "runId": "run-20260227-002",
+    "agentId": "review",
+    "kind": "module_skipped",
+    "severity": "warn",
+    "summary": "review module skipped by configuration",
+    "payload": {
+      "runId": "run-20260227-002",
+      "module": "review",
+      "reason": "disabled_in_config"
+    },
+    "traceId": "trace-run-20260227-002"
+  },
+  {
+    "eventId": "9f3a9d30-3f58-4f9f-8fe8-29a4b2f41010",
+    "ts": 1772158270000,
+    "topicId": "admin-overview",
+    "runId": "admin-0001",
+    "agentId": "review",
+    "kind": "admin_metrics",
+    "severity": "info",
+    "summary": "admin metrics snapshot",
+    "payload": {
+      "ts": 1772158270000,
+      "activeRuns": 3,
+      "runsLast5m": 7,
+      "eventsLast5m": 214,
+      "moduleInFlight": {
+        "review": 1,
+        "ideation": 1,
+        "experiment": 1
+      },
+      "approvalsPending": 2,
+      "errorRateLast5m": 0.08
+    },
+    "traceId": "trace-admin-0001"
   }
 ]

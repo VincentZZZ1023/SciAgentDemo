@@ -1,6 +1,9 @@
 import type {
   AgentId,
   Message,
+  RunConfig,
+  RunCreateResponse,
+  RunDetail,
   SnapshotResponse,
   TraceResponse,
   TopicDetail,
@@ -17,6 +20,7 @@ interface LoginResponse {
 
 interface AuthMeResponse {
   username: string;
+  role?: string;
 }
 
 interface TopicListResponse {
@@ -26,6 +30,12 @@ interface TopicListResponse {
 
 interface MessageListResponse {
   messages: Message[];
+}
+
+interface ApproveRunRequest {
+  module: AgentId;
+  approved: boolean;
+  note?: string;
 }
 
 interface RequestOptions extends RequestInit {
@@ -74,6 +84,14 @@ export const getBackendBaseUrl = (): string => {
   if (typeof configured === "string" && configured.trim().length > 0) {
     return configured.trim().replace(/\/$/, "");
   }
+
+  if (typeof window !== "undefined") {
+    const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+    const rawHost = window.location.hostname?.trim() || "localhost";
+    const host = rawHost === "0.0.0.0" ? "localhost" : rawHost;
+    return `${protocol}//${host}:8000`;
+  }
+
   return DEFAULT_BACKEND_BASE_URL;
 };
 
@@ -242,10 +260,40 @@ export const getSnapshot = async (topicId: string, limit = 200): Promise<Snapsho
   });
 };
 
-export const startRun = async (topicId: string): Promise<{ runId: string; topicId: string }> => {
-  return apiFetch<{ runId: string; topicId: string }>(`/api/topics/${topicId}/runs`, {
+export const getDefaultRunConfig = async (): Promise<RunConfig> => {
+  return apiFetch<RunConfig>("/api/config/default", {
+    method: "GET",
+  });
+};
+
+export const startRun = async (
+  topicId: string,
+  payload: { prompt?: string; config?: RunConfig } = {},
+): Promise<RunCreateResponse> => {
+  const body = {
+    prompt: payload.prompt ?? "",
+    ...(payload.config ? { config: payload.config } : {}),
+  };
+
+  return apiFetch<RunCreateResponse>(`/api/topics/${topicId}/runs`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify(body),
+  });
+};
+
+export const getRun = async (runId: string): Promise<RunDetail> => {
+  return apiFetch<RunDetail>(`/api/runs/${runId}`, {
+    method: "GET",
+  });
+};
+
+export const approveRun = async (
+  runId: string,
+  payload: ApproveRunRequest,
+): Promise<{ ok: boolean }> => {
+  return apiFetch<{ ok: boolean }>(`/api/runs/${runId}/approve`, {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 };
 

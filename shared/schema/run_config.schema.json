@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/sci-agent/run_config.schema.json",
+  "title": "SciAgent RunConfig Schema",
+  "description": "Run configuration contract submitted before starting a topic run.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["modules"],
+  "properties": {
+    "thinkingMode": {
+      "type": "string",
+      "enum": ["normal", "deep"],
+      "default": "normal",
+      "description": "Global thinking strategy for all modules."
+    },
+    "online": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the run can use online/web retrieval capabilities."
+    },
+    "presetName": {
+      "type": "string",
+      "default": "default",
+      "description": "Optional preset name selected by the user."
+    },
+    "modules": {
+      "type": "object",
+      "description": "Per-module execution configuration.",
+      "additionalProperties": false,
+      "required": ["review", "ideation", "experiment"],
+      "properties": {
+        "review": {
+          "$ref": "#/$defs/ModuleConfig"
+        },
+        "ideation": {
+          "$ref": "#/$defs/ModuleConfig"
+        },
+        "experiment": {
+          "$ref": "#/$defs/ModuleConfig"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ModuleConfig": {
+      "type": "object",
+      "description": "Configuration for one module (review/ideation/experiment).",
+      "additionalProperties": false,
+      "required": ["enabled", "model", "requireHuman"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether this module should run in the pipeline."
+        },
+        "model": {
+          "type": "string",
+          "default": "deepseek-chat",
+          "description": "Model identifier used by this module."
+        },
+        "requireHuman": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, this module may request manual approval before finishing."
+        },
+        "toolOptions": {
+          "type": "object",
+          "description": "Optional lightweight extension bucket for future tool-specific options.",
+          "additionalProperties": true,
+          "default": {}
+        }
+      }
+    }
+  }
+}

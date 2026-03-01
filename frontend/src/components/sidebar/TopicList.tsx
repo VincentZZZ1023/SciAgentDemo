@@ -1,4 +1,5 @@
 import { FormEvent, MouseEvent, useMemo, useState } from "react";
+import { getBackendBaseUrl } from "../../api/client";
 import type { TopicSummary } from "../../types/events";
 
 interface TopicListProps {
@@ -17,6 +18,14 @@ const getErrorMessage = (error: unknown): string => {
     return error.message;
   }
   return "Request failed";
+};
+
+const toFriendlyNetworkHint = (message: string): string | null => {
+  const lower = message.toLowerCase();
+  if (lower.includes("failed to fetch") || lower.includes("network request failed")) {
+    return `Cannot reach backend API (${getBackendBaseUrl()}). Check backend startup/CORS/port.`;
+  }
+  return null;
 };
 
 const formatTopicTime = (timestamp?: number): string => {
@@ -42,6 +51,7 @@ export const TopicList = ({
   const [creating, setCreating] = useState(false);
   const [deletingTopicId, setDeletingTopicId] = useState<string | null>(null);
   const [createError, setCreateError] = useState("");
+  const networkHint = toFriendlyNetworkHint(error);
 
   const filteredTopics = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -101,10 +111,10 @@ export const TopicList = ({
   return (
     <div className="topic-list">
       <div className="topic-list-brand">
-        <div className="topic-list-brand-mark">S</div>
+        <div className="topic-list-brand-mark">SC</div>
         <div>
           <h2>SciAgent Console</h2>
-          <p className="muted">Workflow control center</p>
+          <p className="muted">Workflow Control Center</p>
         </div>
       </div>
 
@@ -123,7 +133,7 @@ export const TopicList = ({
         </button>
       </div>
 
-      <div className="topic-list-toolbar">
+      <div className="topic-list-toolbar topic-list-section">
         <input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
@@ -140,7 +150,13 @@ export const TopicList = ({
         </div>
       </div>
 
-      {error ? <div className="topic-list-error">{error}</div> : null}
+      {error ? (
+        <div className="topic-list-error topic-list-section">
+          <strong>{error}</strong>
+          {networkHint ? <p className="topic-list-error-hint">{networkHint}</p> : null}
+          <p className="topic-list-error-hint">API: {getBackendBaseUrl()}</p>
+        </div>
+      ) : null}
 
       <div className="topic-items">
         {filteredTopics.length === 0 && !loading ? (

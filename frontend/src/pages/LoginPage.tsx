@@ -1,12 +1,6 @@
-﻿import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  getAccessToken,
-  getTopics,
-  login,
-  setAccessToken,
-  validateAccessToken,
-} from "../api/client";
+import { getAccessToken, login, setAccessToken, validateAccessToken } from "../api/client";
 
 const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
@@ -44,21 +38,8 @@ export const LoginPage = () => {
         return;
       }
 
-      try {
-        const topics = await getTopics();
-        if (cancelled) {
-          return;
-        }
-
-        if (topics.length > 0) {
-          navigate(`/topics/${topics[0].topicId}`, { replace: true });
-        } else {
-          navigate("/topics", { replace: true });
-        }
-      } catch {
-        if (!cancelled) {
-          navigate("/topics", { replace: true });
-        }
+      if (!cancelled) {
+        navigate("/app-center", { replace: true });
       }
     };
 
@@ -81,13 +62,7 @@ export const LoginPage = () => {
     try {
       const response = await login(username.trim(), password);
       setAccessToken(response.access_token);
-
-      const topics = await getTopics();
-      if (topics.length > 0) {
-        navigate(`/topics/${topics[0].topicId}`, { replace: true });
-      } else {
-        navigate("/topics", { replace: true });
-      }
+      navigate("/app-center", { replace: true });
     } catch (loginError) {
       setError(getErrorMessage(loginError));
     } finally {

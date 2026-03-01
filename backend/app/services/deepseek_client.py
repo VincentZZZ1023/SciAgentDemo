@@ -43,6 +43,7 @@ class DeepSeekClient:
         self,
         messages: list[ChatMessage],
         *,
+        model: str | None = None,
         temperature: float = 0.2,
         max_tokens: int | None = None,
     ) -> str:
@@ -56,8 +57,12 @@ class DeepSeekClient:
         base_url = self._settings.deepseek_base_url.rstrip("/")
         url = f"{base_url}/chat/completions"
 
+        resolved_model = (model or self._settings.deepseek_model).strip()
+        if not resolved_model:
+            resolved_model = self._settings.deepseek_model
+
         payload: dict[str, object] = {
-            "model": self._settings.deepseek_model,
+            "model": resolved_model,
             "messages": messages,
             "temperature": temperature,
         }
@@ -87,7 +92,7 @@ class DeepSeekClient:
                     "DeepSeek timeout (attempt %s/%s, model=%s, timeout=%ss, messages=%s): %s",
                     attempt,
                     max_attempts,
-                    self._settings.deepseek_model,
+                    resolved_model,
                     timeout_value,
                     len(messages),
                     _format_exception(exc),
@@ -98,7 +103,7 @@ class DeepSeekClient:
                     "DeepSeek transport error (attempt %s/%s, model=%s): %s",
                     attempt,
                     max_attempts,
-                    self._settings.deepseek_model,
+                    resolved_model,
                     _format_exception(exc),
                 )
             except Exception as exc:
@@ -107,7 +112,7 @@ class DeepSeekClient:
                     "Unexpected DeepSeek client error (attempt %s/%s, model=%s)",
                     attempt,
                     max_attempts,
-                    self._settings.deepseek_model,
+                    resolved_model,
                 )
 
             if attempt < max_attempts and backoff_seconds > 0:
@@ -138,7 +143,7 @@ class DeepSeekClient:
             logger.warning(
                 "DeepSeek API error (status=%s, model=%s): %s",
                 response.status_code,
-                self._settings.deepseek_model,
+                resolved_model,
                 detail,
             )
             raise DeepSeekClientError(f"DeepSeek API {response.status_code}: {detail}")

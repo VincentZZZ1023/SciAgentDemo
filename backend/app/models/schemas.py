@@ -18,6 +18,13 @@ class EventKind(str, Enum):
     artifact_created = "artifact_created"
     message_created = "message_created"
     agent_subtasks_updated = "agent_subtasks_updated"
+    module_started = "module_started"
+    module_finished = "module_finished"
+    module_skipped = "module_skipped"
+    module_failed = "module_failed"
+    approval_required = "approval_required"
+    approval_resolved = "approval_resolved"
+    admin_metrics = "admin_metrics"
 
 
 class Severity(str, Enum):
@@ -106,6 +113,11 @@ class TraceResponse(BaseModel):
     items: list[TraceItem] = Field(default_factory=list)
 
 
+class UserRole(str, Enum):
+    user = "user"
+    admin = "admin"
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -115,10 +127,12 @@ class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+    role: UserRole
 
 
 class AuthMeResponse(BaseModel):
     username: str
+    role: UserRole
 
 
 class TopicCreateRequest(BaseModel):
@@ -180,10 +194,38 @@ class SnapshotResponse(BaseModel):
     artifacts: list[ArtifactRef] = Field(default_factory=list)
 
 
+class ModuleConfig(BaseModel):
+    enabled: bool = True
+    model: str = "deepseek-chat"
+    requireHuman: bool = False
+
+
+class RunConfig(BaseModel):
+    thinkingMode: str = Field(default="normal", pattern="^(normal|deep)$")
+    online: bool = True
+    presetName: str = "default"
+    modules: dict[str, ModuleConfig] = Field(
+        default_factory=lambda: {
+            AgentId.review.value: ModuleConfig(),
+            AgentId.ideation.value: ModuleConfig(),
+            AgentId.experiment.value: ModuleConfig(),
+        }
+    )
+
+    @model_validator(mode="after")
+    def validate_modules(self) -> "RunConfig":
+        required_keys = {AgentId.review.value, AgentId.ideation.value, AgentId.experiment.value}
+        if set(self.modules.keys()) != required_keys:
+            raise ValueError("modules must contain exactly review/ideation/experiment")
+        return self
+
+
 class RunCreateRequest(BaseModel):
     trigger: str = "manual"
     initiator: str = "user"
     note: str | None = None
+    prompt: str = ""
+    config: RunConfig | None = None
 
 
 class RunCreateResponse(BaseModel):
@@ -192,6 +234,51 @@ class RunCreateResponse(BaseModel):
     status: str
     createdAt: int
     startedAt: int | None = None
+    endedAt: int | None = None
+    currentModule: str | None = None
+    awaitingApproval: bool | None = None
+    awaitingModule: str | None = None
+    config: RunConfig | None = None
+
+
+class RunApproveRequest(BaseModel):
+    module: AgentId
+    approved: bool
+    note: str | None = None
+
+    @model_validator(mode="after")
+    def validate_note(self) -> "RunApproveRequest":
+        if self.note is not None:
+            note = self.note.strip()
+            self.note = note or None
+        return self
+
+
+class RunApproveResponse(BaseModel):
+    ok: bool
+
+
+class RunDetailResponse(BaseModel):
+    runId: str
+    topicId: str
+    status: str
+    createdAt: int
+    startedAt: int | None = None
+    endedAt: int | None = None
+    currentModule: str | None = None
+    awaitingApproval: bool = False
+    awaitingModule: str | None = None
+    config: RunConfig | None = None
+
+
+class AdminOverviewResponse(BaseModel):
+    ts: int
+    activeRuns: int = Field(ge=0)
+    runsLast5m: int = Field(ge=0)
+    eventsLast5m: int = Field(ge=0)
+    moduleInFlight: dict[str, int]
+    approvalsPending: int = Field(ge=0)
+    errorRateLast5m: float = Field(ge=0.0, le=1.0)
 
 
 class AgentCommandRequest(BaseModel):

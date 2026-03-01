@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useState } from "react";
-import { Outlet, useNavigate, useParams } from "react-router-dom";
+import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { createTopic, deleteTopic, getTopics } from "../api/client";
 import { TopicList } from "../components/sidebar/TopicList";
 import type { TopicSummary } from "../types/events";
@@ -19,7 +19,11 @@ const getErrorMessage = (error: unknown): string => {
 
 export const AppLayout = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { topicId } = useParams();
+  const searchParams = new URLSearchParams(location.search);
+  const queryTopicId = searchParams.get("topicId");
+  const queryRunId = searchParams.get("runId");
 
   const [topics, setTopics] = useState<TopicSummary[]>([]);
   const [loadingTopics, setLoadingTopics] = useState(false);
@@ -46,8 +50,14 @@ export const AppLayout = () => {
   }, [refreshTopics]);
 
   useEffect(() => {
+    if (!topicId && queryTopicId && topics.some((topic) => topic.topicId === queryTopicId)) {
+      const query = queryRunId ? `?runId=${encodeURIComponent(queryRunId)}` : "";
+      navigate(`/app/${queryTopicId}${query}`, { replace: true });
+      return;
+    }
+
     if (!topicId && topics.length > 0) {
-      navigate(`/topics/${topics[0].topicId}`, { replace: true });
+      navigate(`/app/${topics[0].topicId}`, { replace: true });
       return;
     }
 
@@ -58,17 +68,17 @@ export const AppLayout = () => {
       !topicsError &&
       !topics.some((topic) => topic.topicId === topicId)
     ) {
-      navigate(`/topics/${topics[0].topicId}`, { replace: true });
+      navigate(`/app/${topics[0].topicId}`, { replace: true });
     }
-  }, [loadingTopics, navigate, topicId, topics, topicsError]);
+  }, [loadingTopics, navigate, queryRunId, queryTopicId, topicId, topics, topicsError]);
 
   const handleSelectTopic = (selectedTopicId: string) => {
-    navigate(`/topics/${selectedTopicId}`);
+    navigate(`/app/${selectedTopicId}`);
   };
 
   const handleCreateTopic = async (name: string, description: string) => {
     const created = await createTopic(name, description);
-    navigate(`/topics/${created.topicId}`);
+    navigate(`/app/${created.topicId}`);
     void refreshTopics();
   };
 
@@ -77,18 +87,18 @@ export const AppLayout = () => {
     const refreshedTopics = await refreshTopics();
 
     if (refreshedTopics.length === 0) {
-      navigate("/topics", { replace: true });
+      navigate("/app", { replace: true });
       return;
     }
 
     if (!topicId || topicId === topicIdToDelete) {
-      navigate(`/topics/${refreshedTopics[0].topicId}`, { replace: true });
+      navigate(`/app/${refreshedTopics[0].topicId}`, { replace: true });
       return;
     }
 
     const stillExists = refreshedTopics.some((topic) => topic.topicId === topicId);
     if (!stillExists) {
-      navigate(`/topics/${refreshedTopics[0].topicId}`, { replace: true });
+      navigate(`/app/${refreshedTopics[0].topicId}`, { replace: true });
     }
   };
 

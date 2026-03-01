@@ -4,22 +4,36 @@ import asyncio
 import json
 import logging
 import time
-from typing import Literal
+from dataclasses import dataclass
+from typing import Any, Literal
 from uuid import uuid4
 
-from sqlmodel import Session
-
-from app.models.schemas import AgentId, ArtifactRef, Event, EventKind, Severity
+from app.core.config import get_settings
+from app.core.run_config import get_default_run_config
+from app.db import SessionLocal
+from app.models.schemas import AgentId, ArtifactRef, Event, EventKind, RunConfig, Severity
+from app.services.approval_manager import ApprovalDecision, approval_manager
 from app.services.deepseek_client import DeepSeekClientError, deepseek_client
 from app.services.event_bus import event_bus
 from app.services.prompt_builder import build_agent_prompt_context, infer_language_code
 from app.store import store
-from app.store.database import ENGINE
 
 logger = logging.getLogger(__name__)
 
 SubtaskStatus = Literal["pending", "running", "completed", "failed"]
 StageName = Literal["review", "ideation", "experiment", "feedback"]
+ModuleName = Literal["review", "ideation", "experiment"]
+
+
+@dataclass
+class ModuleRuntime:
+    module: ModuleName
+    enabled: bool
+    require_human: bool
+    requested_model: str
+    resolved_model: str
+    model_fallback_used: bool
+
 
 
 def now_ms() -> int:
@@ -93,6 +107,222 @@ class FakePipelineRunner:
             "error": message or repr(exc),
             "errorType": exc.__class__.__name__,
         }
+
+    @staticmethod
+    def _module_agent(module: ModuleName) -> AgentId:
+        return AgentId(module)
+
+    @staticmethod
+    def _load_run_config(raw_config: object) -> tuple[RunConfig, bool]:
+        if isinstance(raw_config, dict):
+            try:
+                return RunConfig.model_validate(raw_config), False
+            except Exception:
+                pass
+        return get_default_run_config(), True
+
+    @staticmethod
+    def _resolve_model_name(requested_model: object) -> tuple[str, str, bool]:
+        configured = requested_model.strip() if isinstance(requested_model, str) else ""
+        if not configured:
+            configured = get_settings().deepseek_model
+
+        lowered = configured.lower()
+        if lowered.startswith("deepseek"):
+            return configured, configured, False
+
+        fallback_model = get_settings().deepseek_model
+        return configured, fallback_model, True
+
+    def _build_module_runtime(self, module: ModuleName, run_config: RunConfig) -> ModuleRuntime:
+        cfg = run_config.modules[module]
+        requested_model, resolved_model, model_fallback_used = self._resolve_model_name(cfg.model)
+        return ModuleRuntime(
+            module=module,
+            enabled=bool(cfg.enabled),
+            require_human=bool(cfg.requireHuman),
+            requested_model=requested_model,
+            resolved_model=resolved_model,
+            model_fallback_used=model_fallback_used,
+        )
+
+    async def _emit_module_started(
+        self,
+        *,
+        topic_id: str,
+        run_id: str,
+        trace_id: str,
+        module_runtime: ModuleRuntime,
+        run_config: RunConfig,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "runId": run_id,
+            "module": module_runtime.module,
+            "model": module_runtime.resolved_model,
+            "thinkingMode": run_config.thinkingMode,
+            "online": run_config.online,
+        }
+        if module_runtime.model_fallback_used:
+            payload["requestedModel"] = module_runtime.requested_model
+            payload["fallbackUsed"] = True
+
+        await self._emit(
+            build_event(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=self._module_agent(module_runtime.module),
+                kind=EventKind.module_started,
+                severity=Severity.info,
+                summary=f"{module_runtime.module} module started",
+                payload=payload,
+                trace_id=trace_id,
+            )
+        )
+
+    async def _emit_module_finished(
+        self,
+        *,
+        topic_id: str,
+        run_id: str,
+        trace_id: str,
+        module_runtime: ModuleRuntime,
+        status: Literal["success", "failed", "skipped"],
+        artifact_names: list[str],
+        metrics: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "runId": run_id,
+            "module": module_runtime.module,
+            "status": status,
+            "artifactNames": artifact_names,
+        }
+        if metrics:
+            payload["metrics"] = metrics
+
+        await self._emit(
+            build_event(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=self._module_agent(module_runtime.module),
+                kind=EventKind.module_finished,
+                severity=Severity.info if status == "success" else Severity.warn,
+                summary=f"{module_runtime.module} module {status}",
+                payload=payload,
+                trace_id=trace_id,
+            )
+        )
+
+    async def _emit_module_skipped(
+        self,
+        *,
+        topic_id: str,
+        run_id: str,
+        trace_id: str,
+        module_runtime: ModuleRuntime,
+        reason: str,
+    ) -> None:
+        await self._emit(
+            build_event(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=self._module_agent(module_runtime.module),
+                kind=EventKind.module_skipped,
+                severity=Severity.warn,
+                summary=f"{module_runtime.module} module skipped",
+                payload={
+                    "runId": run_id,
+                    "module": module_runtime.module,
+                    "reason": reason,
+                },
+                trace_id=trace_id,
+            )
+        )
+
+    async def _emit_module_failed(
+        self,
+        *,
+        topic_id: str,
+        run_id: str,
+        trace_id: str,
+        module_runtime: ModuleRuntime,
+        exc: Exception,
+    ) -> None:
+        await self._emit(
+            build_event(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=self._module_agent(module_runtime.module),
+                kind=EventKind.module_failed,
+                severity=Severity.error,
+                summary=f"{module_runtime.module} module failed",
+                payload={
+                    "runId": run_id,
+                    "module": module_runtime.module,
+                    "error": {
+                        "message": str(exc) or exc.__class__.__name__,
+                        "code": exc.__class__.__name__,
+                    },
+                    "retryable": False,
+                },
+                trace_id=trace_id,
+            )
+        )
+
+    async def _wait_if_human_required(
+        self,
+        *,
+        topic_id: str,
+        run_id: str,
+        trace_id: str,
+        module_runtime: ModuleRuntime,
+        summary: str,
+        artifact_name: str | None = None,
+    ) -> ApprovalDecision:
+        if not module_runtime.require_human:
+            return ApprovalDecision(approved=True, note=None)
+
+        await approval_manager.create_pending(run_id, module_runtime.module)
+
+        await store.update_run_runtime(
+            run_id,
+            topic_id=topic_id,
+            status="paused",
+            current_module=module_runtime.module,
+            awaiting_approval=True,
+            awaiting_module=module_runtime.module,
+        )
+
+        payload: dict[str, Any] = {
+            "runId": run_id,
+            "module": module_runtime.module,
+            "summary": summary,
+        }
+        if artifact_name:
+            payload["artifactName"] = artifact_name
+
+        await self._emit(
+            build_event(
+                topic_id=topic_id,
+                run_id=run_id,
+                agent_id=self._module_agent(module_runtime.module),
+                kind=EventKind.approval_required,
+                severity=Severity.warn,
+                summary=f"{module_runtime.module} requires human approval",
+                payload=payload,
+                trace_id=trace_id,
+            )
+        )
+
+        decision = await approval_manager.wait_for_decision(run_id, module_runtime.module)
+        await store.update_run_runtime(
+            run_id,
+            topic_id=topic_id,
+            status="running",
+            current_module=module_runtime.module,
+            awaiting_approval=False,
+            awaiting_module=None,
+        )
+        return decision
 
     @staticmethod
     def _sanitize_subtask_status(value: object) -> SubtaskStatus:
@@ -298,6 +528,7 @@ class FakePipelineRunner:
         topic_id: str,
         run_id: str,
         trace_id: str,
+        llm_model: str | None = None,
     ) -> list[dict]:
         fallback_subtasks = self._fallback_subtasks(
             agent_id=agent_id,
@@ -330,6 +561,7 @@ class FakePipelineRunner:
             ),
             final_task=planner_task,
             fallback_content={"subtasks": fallback_subtasks},
+            llm_model=llm_model,
             max_tokens=700,
         )
 
@@ -610,9 +842,10 @@ class FakePipelineRunner:
         upstream_content: str,
         final_task: str,
         fallback_content: str,
+        llm_model: str | None = None,
         max_tokens: int | None = None,
     ) -> str:
-        with Session(ENGINE) as db:
+        with SessionLocal() as db:
             messages = await build_agent_prompt_context(
                 db=db,
                 topic_id=topic_id,
@@ -631,6 +864,7 @@ class FakePipelineRunner:
             summary=f"{agent_id.value} invoking DeepSeek",
             payload={
                 "provider": "deepseek",
+                "model": llm_model or get_settings().deepseek_model,
                 "messageCount": len(messages),
                 "maxTokens": max_tokens,
             },
@@ -655,7 +889,7 @@ class FakePipelineRunner:
             return fallback_content
 
         try:
-            response = await deepseek_client.chat(messages, max_tokens=max_tokens)
+            response = await deepseek_client.chat(messages, model=llm_model, max_tokens=max_tokens)
         except DeepSeekClientError as exc:
             error_payload = self._error_payload(exc)
             logger.warning(
@@ -710,9 +944,10 @@ class FakePipelineRunner:
         upstream_content: str,
         final_task: str,
         fallback_content: dict,
+        llm_model: str | None = None,
         max_tokens: int | None = None,
     ) -> dict:
-        with Session(ENGINE) as db:
+        with SessionLocal() as db:
             messages = await build_agent_prompt_context(
                 db=db,
                 topic_id=topic_id,
@@ -731,6 +966,7 @@ class FakePipelineRunner:
             summary=f"{agent_id.value} invoking DeepSeek",
             payload={
                 "provider": "deepseek",
+                "model": llm_model or get_settings().deepseek_model,
                 "messageCount": len(messages),
                 "maxTokens": max_tokens,
             },
@@ -755,7 +991,7 @@ class FakePipelineRunner:
             return dict(fallback_content)
 
         try:
-            response = await deepseek_client.chat(messages, max_tokens=max_tokens)
+            response = await deepseek_client.chat(messages, model=llm_model, max_tokens=max_tokens)
         except DeepSeekClientError as exc:
             error_payload = self._error_payload(exc)
             logger.warning(
@@ -801,12 +1037,111 @@ class FakePipelineRunner:
 
     async def run_pipeline(self, topic_id: str, run_id: str) -> None:
         trace_id = f"trace-{uuid4()}"
-        active_subtasks: list[dict] | None = None
-        active_stage: StageName | None = None
-        active_agent: AgentId | None = None
+        active_agent = AgentId.review
+        active_stage: StageName = "review"
+        active_module_runtime: ModuleRuntime | None = None
+        module_failure_emitted = False
+
+        async def prepare_module(
+            module_runtime: ModuleRuntime,
+            *,
+            approval_summary: str,
+            artifact_name: str,
+        ) -> bool:
+            await store.update_run_runtime(
+                run_id,
+                topic_id=topic_id,
+                status="running",
+                current_module=module_runtime.module,
+                awaiting_approval=False,
+                awaiting_module=None,
+            )
+
+            if not module_runtime.enabled:
+                await self._emit_module_skipped(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    trace_id=trace_id,
+                    module_runtime=module_runtime,
+                    reason="disabled_in_config",
+                )
+                await self._update_agent(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    agent_id=self._module_agent(module_runtime.module),
+                    status="skipped",
+                    progress=1.0,
+                    summary=f"{module_runtime.module} skipped (disabled_in_config)",
+                    trace_id=trace_id,
+                )
+                return False
+
+            if module_runtime.model_fallback_used:
+                await self._emit_llm_stage(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    agent_id=self._module_agent(module_runtime.module),
+                    trace_id=trace_id,
+                    summary="unsupported model configured, fallback model applied",
+                    severity=Severity.warn,
+                    payload={
+                        "requestedModel": module_runtime.requested_model,
+                        "resolvedModel": module_runtime.resolved_model,
+                        "fallback": True,
+                    },
+                )
+
+            decision = await self._wait_if_human_required(
+                topic_id=topic_id,
+                run_id=run_id,
+                trace_id=trace_id,
+                module_runtime=module_runtime,
+                summary=approval_summary,
+                artifact_name=artifact_name,
+            )
+            if not decision.approved:
+                await self._emit_module_skipped(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    trace_id=trace_id,
+                    module_runtime=module_runtime,
+                    reason="rejected_by_human",
+                )
+                await self._update_agent(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    agent_id=self._module_agent(module_runtime.module),
+                    status="skipped",
+                    progress=1.0,
+                    summary=f"{module_runtime.module} skipped (human rejected)",
+                    trace_id=trace_id,
+                )
+                return False
+
+            await self._emit_module_started(
+                topic_id=topic_id,
+                run_id=run_id,
+                trace_id=trace_id,
+                module_runtime=module_runtime,
+                run_config=run_config,
+            )
+            return True
 
         try:
-            await store.update_run_status(topic_id, run_id, "running")
+            run_record = await store.get_run(run_id)
+            if run_record is None or run_record["topicId"] != topic_id:
+                raise KeyError(run_id)
+
+            await store.update_run_runtime(
+                run_id,
+                topic_id=topic_id,
+                status="running",
+                current_module=None,
+                awaiting_approval=False,
+                awaiting_module=None,
+                touch_started_at=True,
+            )
+
             topic = await store.get_topic(topic_id)
             if topic is None:
                 raise KeyError(topic_id)
@@ -814,7 +1149,6 @@ class FakePipelineRunner:
             topic_title = self._safe_text(topic.get("title"), self._safe_text(topic.get("name"), topic_id))
             topic_description = self._safe_text(topic.get("description"))
             topic_objective = self._safe_text(topic.get("objective"))
-
             topic_anchor = self._build_topic_anchor(
                 topic_id=topic_id,
                 topic_title=topic_title,
@@ -822,6 +1156,8 @@ class FakePipelineRunner:
                 topic_objective=topic_objective,
             )
             preferred_language = infer_language_code(topic_title, topic_description, topic_objective)
+
+            run_config, config_fallback_used = self._load_run_config(run_record.get("config"))
 
             await self._emit(
                 build_event(
@@ -831,869 +1167,488 @@ class FakePipelineRunner:
                     kind=EventKind.event_emitted,
                     severity=Severity.info,
                     summary="run started",
-                    payload={"phase": "run_started", "topicTitle": topic_title},
+                    payload={
+                        "phase": "run_started",
+                        "topicTitle": topic_title,
+                        "thinkingMode": run_config.thinkingMode,
+                        "online": run_config.online,
+                    },
                     trace_id=trace_id,
                 )
             )
+            if config_fallback_used:
+                await self._emit_llm_stage(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    agent_id=AgentId.review,
+                    trace_id=trace_id,
+                    summary="run config invalid, default config applied",
+                    severity=Severity.warn,
+                    payload={"fallback": True},
+                )
 
-            review_subtasks = await self.generate_subtasks_plan(
-                AgentId.review,
-                "review",
-                topic_anchor,
-                topic_anchor,
-                preferred_language,
-                topic_id=topic_id,
-                run_id=run_id,
-                trace_id=trace_id,
+            review_runtime = self._build_module_runtime("review", run_config)
+            ideation_runtime = self._build_module_runtime("ideation", run_config)
+            experiment_runtime = self._build_module_runtime("experiment", run_config)
+
+            survey_content = self._fallback_review_markdown(
+                language=preferred_language,
+                topic_title=topic_title,
+                topic_description=topic_description,
+                topic_objective=topic_objective,
             )
-            active_subtasks = review_subtasks
-            active_stage = "review"
+            ideas_content = self._fallback_ideas_markdown(
+                language=preferred_language,
+                topic_title=topic_title,
+                topic_description=topic_description,
+                topic_objective=topic_objective,
+            )
+            results_content: dict[str, Any] = {
+                "topicId": topic_id,
+                "topicTitle": topic_title,
+                "runId": run_id,
+                "metrics": {"accuracy": 0.78, "f1": 0.74, "robustness": 0.71},
+                "notes": "Fallback result content",
+                "next_actions": ["scale data", "run ablation", "track cost/quality"],
+            }
+            metrics: dict[str, Any] = dict(results_content["metrics"])
+            result_report_content = self._fallback_result_report_markdown(
+                language=preferred_language,
+                topic_title=topic_title,
+                topic_description=topic_description,
+                topic_objective=topic_objective,
+                metrics=metrics,
+            )
+
+            ideation_executed = False
+            experiment_executed = False
+
+            # review module
             active_agent = AgentId.review
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.review,
-                stage="review",
-                subtasks=review_subtasks,
-                trace_id=trace_id,
-                summary="review subtasks planned",
-            )
-            review_subtasks = self._patch_subtask_state(
-                review_subtasks,
-                0,
-                status="running",
-                progress=0.1,
-            )
-            active_subtasks = review_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.review,
-                stage="review",
-                subtasks=review_subtasks,
-                trace_id=trace_id,
-                summary="review subtask started",
-            )
+            active_stage = "review"
+            active_module_runtime = review_runtime
+            if await prepare_module(
+                review_runtime,
+                approval_summary="Review module requires approval before generating survey.md",
+                artifact_name="survey.md",
+            ):
+                try:
+                    await self._update_agent(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.review,
+                        status="running",
+                        progress=0.1,
+                        summary="review running",
+                        trace_id=trace_id,
+                    )
+                    await self._emit(
+                        build_event(
+                            topic_id=topic_id,
+                            run_id=run_id,
+                            agent_id=AgentId.review,
+                            kind=EventKind.event_emitted,
+                            severity=Severity.info,
+                            summary="starting literature review",
+                            payload={"stage": "review"},
+                            trace_id=trace_id,
+                        )
+                    )
+                    await asyncio.sleep(self._step_sleep)
 
-            await self._update_agent(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.review,
-                status="running",
-                progress=0.1,
-                summary="review running",
-                trace_id=trace_id,
-            )
-            await self._emit(
-                build_event(
-                    topic_id=topic_id,
-                    run_id=run_id,
-                    agent_id=AgentId.review,
-                    kind=EventKind.event_emitted,
-                    severity=Severity.info,
-                    summary="starting literature review",
-                    payload={"stage": "review"},
-                    trace_id=trace_id,
-                )
-            )
-            await asyncio.sleep(self._step_sleep)
+                    survey_content = await self._generate_text_content(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.review,
+                        trace_id=trace_id,
+                        system_policy="You are the review agent. Produce a rigorous, topic-grounded literature survey in markdown.",
+                        upstream_content=topic_anchor,
+                        final_task="Generate survey.md using <upstream_reference>.",
+                        fallback_content=survey_content,
+                        llm_model=review_runtime.resolved_model,
+                        max_tokens=1800,
+                    )
+                    survey_artifact = await self._create_artifact(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        name="survey.md",
+                        content_type="text/markdown",
+                        content=survey_content,
+                    )
+                    await self._emit(
+                        build_event(
+                            topic_id=topic_id,
+                            run_id=run_id,
+                            agent_id=AgentId.review,
+                            kind=EventKind.artifact_created,
+                            severity=Severity.info,
+                            summary="review produced survey.md",
+                            payload={"handoffTo": "ideation", "artifactRole": "survey"},
+                            artifacts=[survey_artifact],
+                            trace_id=trace_id,
+                        )
+                    )
+                    await self._update_agent(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.review,
+                        status="completed",
+                        progress=1.0,
+                        summary="review completed",
+                        trace_id=trace_id,
+                    )
+                    await self._emit_module_finished(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        trace_id=trace_id,
+                        module_runtime=review_runtime,
+                        status="success",
+                        artifact_names=["survey.md"],
+                        metrics={
+                            "model": review_runtime.resolved_model,
+                            "fallbackModelUsed": review_runtime.model_fallback_used,
+                        },
+                    )
+                except Exception as exc:
+                    module_failure_emitted = True
+                    await self._emit_module_failed(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        trace_id=trace_id,
+                        module_runtime=review_runtime,
+                        exc=exc,
+                    )
+                    raise
 
-            review_subtasks = self._patch_subtask_state(
-                review_subtasks,
-                0,
-                status="completed",
-            )
-            review_subtasks = self._patch_subtask_state(
-                review_subtasks,
-                1,
-                status="running",
-                progress=0.2,
-            )
-            active_subtasks = review_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.review,
-                stage="review",
-                subtasks=review_subtasks,
-                trace_id=trace_id,
-            )
-
-            survey_content = await self._generate_text_content(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.review,
-                trace_id=trace_id,
-                system_policy="You are the review agent. Produce a rigorous, topic-grounded literature survey in markdown.",
-                upstream_content=topic_anchor,
-                final_task=(
-                    "Generate survey.md using <upstream_reference>. You must explicitly map all conclusions to "
-                    "topic title/description/objective and avoid generic boilerplate."
-                ),
-                fallback_content=self._fallback_review_markdown(
-                    language=preferred_language,
-                    topic_title=topic_title,
-                    topic_description=topic_description,
-                    topic_objective=topic_objective,
-                ),
-                max_tokens=1800,
-            )
-
-            review_subtasks = self._patch_subtask_state(
-                review_subtasks,
-                1,
-                status="completed",
-            )
-            review_subtasks = self._patch_subtask_state(
-                review_subtasks,
-                2,
-                status="running",
-                progress=0.5,
-            )
-            active_subtasks = review_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.review,
-                stage="review",
-                subtasks=review_subtasks,
-                trace_id=trace_id,
-            )
-
-            await self._update_agent(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.review,
-                status="completed",
-                progress=1.0,
-                summary="review completed",
-                trace_id=trace_id,
-            )
-
-            survey_artifact = await self._create_artifact(
-                topic_id=topic_id,
-                run_id=run_id,
-                name="survey.md",
-                content_type="text/markdown",
-                content=survey_content,
-            )
-
-            await self._emit(
-                build_event(
-                    topic_id=topic_id,
-                    run_id=run_id,
-                    agent_id=AgentId.review,
-                    kind=EventKind.artifact_created,
-                    severity=Severity.info,
-                    summary="review produced survey.md",
-                    payload={"handoffTo": "ideation", "artifactRole": "survey"},
-                    artifacts=[survey_artifact],
-                    trace_id=trace_id,
-                )
-            )
-
-            review_subtasks = self._patch_subtask_state(
-                review_subtasks,
-                2,
-                status="completed",
-            )
-            review_subtasks = self._patch_subtask_state(
-                review_subtasks,
-                3,
-                status="completed",
-                progress=1.0,
-            )
-            for index in range(4, len(review_subtasks)):
-                review_subtasks = self._patch_subtask_state(
-                    review_subtasks,
-                    index,
-                    status="completed",
-                    progress=1.0,
-                )
-            active_subtasks = review_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.review,
-                stage="review",
-                subtasks=review_subtasks,
-                trace_id=trace_id,
-                summary="review subtasks completed",
-            )
-
+            # ideation module
+            active_agent = AgentId.ideation
+            active_stage = "ideation"
+            active_module_runtime = ideation_runtime
             ideas_upstream = (
                 f"{topic_anchor}\n\n"
                 "<review_survey>\n"
                 f"{survey_content}\n"
                 "</review_survey>"
             )
-            ideation_subtasks = await self.generate_subtasks_plan(
-                AgentId.ideation,
-                "ideation",
-                topic_anchor,
-                ideas_upstream,
-                preferred_language,
-                topic_id=topic_id,
-                run_id=run_id,
-                trace_id=trace_id,
-            )
-            active_subtasks = ideation_subtasks
-            active_stage = "ideation"
-            active_agent = AgentId.ideation
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                stage="ideation",
-                subtasks=ideation_subtasks,
-                trace_id=trace_id,
-                summary="ideation subtasks planned",
-            )
-            ideation_subtasks = self._patch_subtask_state(
-                ideation_subtasks,
-                0,
-                status="running",
-                progress=0.1,
-            )
-            active_subtasks = ideation_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                stage="ideation",
-                subtasks=ideation_subtasks,
-                trace_id=trace_id,
-                summary="ideation subtask started",
-            )
+            if await prepare_module(
+                ideation_runtime,
+                approval_summary="Ideation module requires approval before generating ideas.md",
+                artifact_name="ideas.md",
+            ):
+                try:
+                    await self._update_agent(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.ideation,
+                        status="running",
+                        progress=0.2,
+                        summary="ideation running",
+                        trace_id=trace_id,
+                    )
+                    await self._emit(
+                        build_event(
+                            topic_id=topic_id,
+                            run_id=run_id,
+                            agent_id=AgentId.ideation,
+                            kind=EventKind.event_emitted,
+                            severity=Severity.info,
+                            summary="generating ideas from survey",
+                            payload={"stage": "ideation"},
+                            trace_id=trace_id,
+                        )
+                    )
+                    await asyncio.sleep(self._step_sleep)
 
-            await self._update_agent(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                status="running",
-                progress=0.2,
-                summary="ideation running",
-                trace_id=trace_id,
-            )
-            await self._emit(
-                build_event(
-                    topic_id=topic_id,
-                    run_id=run_id,
-                    agent_id=AgentId.ideation,
-                    kind=EventKind.event_emitted,
-                    severity=Severity.info,
-                    summary="generating ideas from survey",
-                    payload={"stage": "ideation"},
-                    trace_id=trace_id,
-                )
-            )
-            await asyncio.sleep(self._step_sleep)
+                    ideas_content = await self._generate_text_content(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.ideation,
+                        trace_id=trace_id,
+                        system_policy="You are the ideation agent. Produce implementation-ready ideas.",
+                        upstream_content=ideas_upstream,
+                        final_task="Generate ideas.md from <upstream_reference>.",
+                        fallback_content=ideas_content,
+                        llm_model=ideation_runtime.resolved_model,
+                        max_tokens=1800,
+                    )
+                    ideas_artifact = await self._create_artifact(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        name="ideas.md",
+                        content_type="text/markdown",
+                        content=ideas_content,
+                    )
+                    await self._emit(
+                        build_event(
+                            topic_id=topic_id,
+                            run_id=run_id,
+                            agent_id=AgentId.ideation,
+                            kind=EventKind.artifact_created,
+                            severity=Severity.info,
+                            summary="ideation produced ideas.md",
+                            payload={"handoffTo": "experiment", "artifactRole": "idea"},
+                            artifacts=[ideas_artifact],
+                            trace_id=trace_id,
+                        )
+                    )
+                    await self._update_agent(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.ideation,
+                        status="completed",
+                        progress=1.0,
+                        summary="ideation completed",
+                        trace_id=trace_id,
+                    )
+                    await self._emit_module_finished(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        trace_id=trace_id,
+                        module_runtime=ideation_runtime,
+                        status="success",
+                        artifact_names=["ideas.md"],
+                        metrics={
+                            "model": ideation_runtime.resolved_model,
+                            "fallbackModelUsed": ideation_runtime.model_fallback_used,
+                        },
+                    )
+                    ideation_executed = True
+                except Exception as exc:
+                    module_failure_emitted = True
+                    await self._emit_module_failed(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        trace_id=trace_id,
+                        module_runtime=ideation_runtime,
+                        exc=exc,
+                    )
+                    raise
 
-            ideation_subtasks = self._patch_subtask_state(
-                ideation_subtasks,
-                0,
-                status="completed",
-            )
-            ideation_subtasks = self._patch_subtask_state(
-                ideation_subtasks,
-                1,
-                status="running",
-                progress=0.3,
-            )
-            active_subtasks = ideation_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                stage="ideation",
-                subtasks=ideation_subtasks,
-                trace_id=trace_id,
-            )
-            ideas_content = await self._generate_text_content(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                trace_id=trace_id,
-                system_policy="You are the ideation agent. Produce implementation-ready ideas that are tightly scoped to the topic.",
-                upstream_content=ideas_upstream,
-                final_task=(
-                    "Generate ideas.md from <upstream_reference>. Provide at least 3 executable ideas. "
-                    "Each idea must include assumptions, metrics, risk, and how it serves the topic objective."
-                ),
-                fallback_content=self._fallback_ideas_markdown(
-                    language=preferred_language,
-                    topic_title=topic_title,
-                    topic_description=topic_description,
-                    topic_objective=topic_objective,
-                ),
-                max_tokens=1800,
-            )
-
-            ideation_subtasks = self._patch_subtask_state(
-                ideation_subtasks,
-                1,
-                status="completed",
-            )
-            ideation_subtasks = self._patch_subtask_state(
-                ideation_subtasks,
-                2,
-                status="running",
-                progress=0.65,
-            )
-            active_subtasks = ideation_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                stage="ideation",
-                subtasks=ideation_subtasks,
-                trace_id=trace_id,
-            )
-
-            await self._update_agent(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                status="completed",
-                progress=1.0,
-                summary="ideation completed",
-                trace_id=trace_id,
-            )
-
-            ideas_artifact = await self._create_artifact(
-                topic_id=topic_id,
-                run_id=run_id,
-                name="ideas.md",
-                content_type="text/markdown",
-                content=ideas_content,
-            )
-
-            await self._emit(
-                build_event(
-                    topic_id=topic_id,
-                    run_id=run_id,
-                    agent_id=AgentId.ideation,
-                    kind=EventKind.artifact_created,
-                    severity=Severity.info,
-                    summary="ideation produced ideas.md",
-                    payload={"handoffTo": "experiment", "artifactRole": "idea"},
-                    artifacts=[ideas_artifact],
-                    trace_id=trace_id,
-                )
-            )
-
-            ideation_subtasks = self._patch_subtask_state(
-                ideation_subtasks,
-                2,
-                status="completed",
-            )
-            ideation_subtasks = self._patch_subtask_state(
-                ideation_subtasks,
-                3,
-                status="completed",
-                progress=1.0,
-            )
-            for index in range(4, len(ideation_subtasks)):
-                ideation_subtasks = self._patch_subtask_state(
-                    ideation_subtasks,
-                    index,
-                    status="completed",
-                    progress=1.0,
-                )
-            active_subtasks = ideation_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                stage="ideation",
-                subtasks=ideation_subtasks,
-                trace_id=trace_id,
-                summary="ideation subtasks completed",
-            )
-
+            # experiment module
+            active_agent = AgentId.experiment
+            active_stage = "experiment"
+            active_module_runtime = experiment_runtime
             experiment_upstream = (
                 f"{topic_anchor}\n\n"
                 "<ideas_input>\n"
                 f"{ideas_content}\n"
                 "</ideas_input>"
             )
-            experiment_subtasks = await self.generate_subtasks_plan(
-                AgentId.experiment,
-                "experiment",
-                topic_anchor,
-                experiment_upstream,
-                preferred_language,
-                topic_id=topic_id,
-                run_id=run_id,
-                trace_id=trace_id,
-            )
-            active_subtasks = experiment_subtasks
-            active_stage = "experiment"
-            active_agent = AgentId.experiment
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                stage="experiment",
-                subtasks=experiment_subtasks,
-                trace_id=trace_id,
-                summary="experiment subtasks planned",
-            )
-            experiment_subtasks = self._patch_subtask_state(
-                experiment_subtasks,
-                0,
-                status="running",
-                progress=0.1,
-            )
-            active_subtasks = experiment_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                stage="experiment",
-                subtasks=experiment_subtasks,
-                trace_id=trace_id,
-                summary="experiment subtask started",
-            )
+            if await prepare_module(
+                experiment_runtime,
+                approval_summary="Experiment module requires approval before execution",
+                artifact_name="results.json",
+            ):
+                try:
+                    await self._update_agent(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.experiment,
+                        status="running",
+                        progress=0.25,
+                        summary="experiment running",
+                        trace_id=trace_id,
+                    )
+                    await self._emit(
+                        build_event(
+                            topic_id=topic_id,
+                            run_id=run_id,
+                            agent_id=AgentId.experiment,
+                            kind=EventKind.event_emitted,
+                            severity=Severity.info,
+                            summary="running experiments for idea",
+                            payload={"stage": "experiment"},
+                            trace_id=trace_id,
+                        )
+                    )
+                    await asyncio.sleep(self._step_sleep)
+                    await self._emit(
+                        build_event(
+                            topic_id=topic_id,
+                            run_id=run_id,
+                            agent_id=AgentId.experiment,
+                            kind=EventKind.event_emitted,
+                            severity=Severity.error,
+                            summary="experiment encountered temporary failure, retrying",
+                            payload={"errorCode": "SIM_TEMP_FAILURE", "retryable": True},
+                            trace_id=trace_id,
+                        )
+                    )
 
-            await self._update_agent(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                status="running",
-                progress=0.25,
-                summary="experiment running",
-                trace_id=trace_id,
-            )
-            await self._emit(
-                build_event(
-                    topic_id=topic_id,
-                    run_id=run_id,
-                    agent_id=AgentId.experiment,
-                    kind=EventKind.event_emitted,
-                    severity=Severity.info,
-                    summary="running experiments for idea",
-                    payload={"stage": "experiment"},
-                    trace_id=trace_id,
-                )
-            )
-            await asyncio.sleep(self._step_sleep)
+                    results_content = await self._generate_json_content(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.experiment,
+                        trace_id=trace_id,
+                        system_policy="You are the experiment agent. Return strict JSON only.",
+                        upstream_content=experiment_upstream,
+                        final_task="Generate strict JSON results from <upstream_reference>.",
+                        fallback_content=results_content,
+                        llm_model=experiment_runtime.resolved_model,
+                        max_tokens=1200,
+                    )
+                    metrics = results_content.get("metrics") if isinstance(results_content.get("metrics"), dict) else {}
+                    result_report_content = await self._generate_text_content(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.experiment,
+                        trace_id=trace_id,
+                        system_policy="You are the experiment reporting agent. Produce a detailed markdown report.",
+                        upstream_content=(
+                            f"{topic_anchor}\n\n"
+                            "<results_json>\n"
+                            f"{json.dumps(results_content, ensure_ascii=False)}\n"
+                            "</results_json>"
+                        ),
+                        final_task="Generate result.md from <upstream_reference>.",
+                        fallback_content=result_report_content,
+                        llm_model=experiment_runtime.resolved_model,
+                        max_tokens=1800,
+                    )
 
-            experiment_subtasks = self._patch_subtask_state(
-                experiment_subtasks,
-                0,
-                status="completed",
-            )
-            experiment_subtasks = self._patch_subtask_state(
-                experiment_subtasks,
-                1,
-                status="running",
-                progress=0.25,
-            )
-            active_subtasks = experiment_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                stage="experiment",
-                subtasks=experiment_subtasks,
-                trace_id=trace_id,
-            )
+                    results_artifact = await self._create_artifact(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        name="results.json",
+                        content_type="application/json",
+                        content=results_content,
+                    )
+                    result_report_artifact = await self._create_artifact(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        name="result.md",
+                        content_type="text/markdown",
+                        content=result_report_content,
+                    )
+                    await self._emit(
+                        build_event(
+                            topic_id=topic_id,
+                            run_id=run_id,
+                            agent_id=AgentId.experiment,
+                            kind=EventKind.artifact_created,
+                            severity=Severity.info,
+                            summary="experiment produced results.json",
+                            payload={"handoffTo": "ideation", "artifactRole": "results", "metrics": metrics},
+                            artifacts=[results_artifact],
+                            trace_id=trace_id,
+                        )
+                    )
+                    await self._emit(
+                        build_event(
+                            topic_id=topic_id,
+                            run_id=run_id,
+                            agent_id=AgentId.experiment,
+                            kind=EventKind.artifact_created,
+                            severity=Severity.info,
+                            summary="experiment produced result.md",
+                            payload={"handoffTo": "ideation", "artifactRole": "result_report"},
+                            artifacts=[result_report_artifact],
+                            trace_id=trace_id,
+                        )
+                    )
+                    await self._update_agent(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.experiment,
+                        status="completed",
+                        progress=1.0,
+                        summary="experiment completed",
+                        trace_id=trace_id,
+                    )
+                    await self._emit_module_finished(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        trace_id=trace_id,
+                        module_runtime=experiment_runtime,
+                        status="success",
+                        artifact_names=["results.json", "result.md"],
+                        metrics={
+                            "model": experiment_runtime.resolved_model,
+                            "fallbackModelUsed": experiment_runtime.model_fallback_used,
+                        },
+                    )
+                    experiment_executed = True
+                except Exception as exc:
+                    module_failure_emitted = True
+                    await self._emit_module_failed(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        trace_id=trace_id,
+                        module_runtime=experiment_runtime,
+                        exc=exc,
+                    )
+                    raise
 
-            await self._emit(
-                build_event(
-                    topic_id=topic_id,
-                    run_id=run_id,
-                    agent_id=AgentId.experiment,
-                    kind=EventKind.event_emitted,
-                    severity=Severity.error,
-                    summary="experiment encountered temporary failure, retrying",
-                    payload={"errorCode": "SIM_TEMP_FAILURE", "retryable": True},
-                    trace_id=trace_id,
-                )
-            )
-            await asyncio.sleep(self._step_sleep)
-
-            experiment_subtasks = self._patch_subtask_state(
-                experiment_subtasks,
-                1,
-                status="failed",
-                progress=0.45,
-            )
-            experiment_subtasks = self._patch_subtask_state(
-                experiment_subtasks,
-                2,
-                status="running",
-                progress=0.55,
-            )
-            active_subtasks = experiment_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                stage="experiment",
-                subtasks=experiment_subtasks,
-                trace_id=trace_id,
-                severity=Severity.warn,
-                summary="experiment subtask failed and switched to retry path",
-            )
-
-            fallback_results = {
-                "topicId": topic_id,
-                "topicTitle": topic_title,
-                "runId": run_id,
-                "metrics": {"accuracy": 0.78, "f1": 0.74, "robustness": 0.71},
-                "notes": (
-                    "Temporary issue recovered. Metrics are simulated fallback values "
-                    "but remain aligned with the topic objective."
-                ),
-                "next_actions": [
-                    "Scale evaluation set with harder samples",
-                    "Add ablation on retrieval and routing components",
-                    "Track quality-cost tradeoff in production-like environment",
-                ],
-            }
-            results_content = await self._generate_json_content(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                trace_id=trace_id,
-                system_policy="You are the experiment agent. Return strict JSON only.",
-                upstream_content=experiment_upstream,
-                final_task=(
-                    "Generate strict JSON results from <upstream_reference>. Required keys: "
-                    "topicId, topicTitle, runId, metrics, notes, next_actions. Ensure metrics align to topic objective."
-                ),
-                fallback_content=fallback_results,
-                max_tokens=1200,
-            )
-            results_content.setdefault("topicId", topic_id)
-            results_content.setdefault("topicTitle", topic_title)
-            results_content.setdefault("runId", run_id)
-            metrics = results_content.get("metrics")
-            if not isinstance(metrics, dict):
-                metrics = fallback_results["metrics"]
-                results_content["metrics"] = metrics
-            if not isinstance(results_content.get("notes"), str):
-                results_content["notes"] = fallback_results["notes"]
-            next_actions = results_content.get("next_actions")
-            if not isinstance(next_actions, list):
-                results_content["next_actions"] = fallback_results["next_actions"]
-
-            experiment_subtasks = self._patch_subtask_state(
-                experiment_subtasks,
-                2,
-                status="completed",
-            )
-            experiment_subtasks = self._patch_subtask_state(
-                experiment_subtasks,
-                3,
-                status="running",
-                progress=0.7,
-            )
-            active_subtasks = experiment_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                stage="experiment",
-                subtasks=experiment_subtasks,
-                trace_id=trace_id,
-            )
-
-            result_report_content = await self._generate_text_content(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                trace_id=trace_id,
-                system_policy="You are the experiment reporting agent. Produce a detailed markdown report grounded in topic context.",
-                upstream_content=(
-                    f"{topic_anchor}\n\n"
-                    "<ideas_input>\n"
-                    f"{ideas_content}\n"
-                    "</ideas_input>\n\n"
-                    "<results_json>\n"
-                    f"{json.dumps(results_content, ensure_ascii=False, indent=2)}\n"
-                    "</results_json>"
-                ),
-                final_task=(
-                    "Generate result.md from <upstream_reference>. Include setup, observations, metric interpretation, "
-                    "risk assessment, and next-step plan. Explicitly tie conclusions to topic objective."
-                ),
-                fallback_content=self._fallback_result_report_markdown(
-                    language=preferred_language,
-                    topic_title=topic_title,
-                    topic_description=topic_description,
-                    topic_objective=topic_objective,
-                    metrics=metrics,
-                ),
-                max_tokens=1800,
-            )
-
-            experiment_subtasks = self._patch_subtask_state(
-                experiment_subtasks,
-                3,
-                status="completed",
-            )
-            for index in range(4, len(experiment_subtasks)):
-                experiment_subtasks = self._patch_subtask_state(
-                    experiment_subtasks,
-                    index,
-                    status="completed",
-                    progress=1.0,
-                )
-            active_subtasks = experiment_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                stage="experiment",
-                subtasks=experiment_subtasks,
-                trace_id=trace_id,
-                summary="experiment subtasks completed",
-            )
-
-            await self._update_agent(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                status="completed",
-                progress=1.0,
-                summary="experiment completed",
-                trace_id=trace_id,
-            )
-
-            results_artifact = await self._create_artifact(
-                topic_id=topic_id,
-                run_id=run_id,
-                name="results.json",
-                content_type="application/json",
-                content=results_content,
-            )
-            result_report_artifact = await self._create_artifact(
-                topic_id=topic_id,
-                run_id=run_id,
-                name="result.md",
-                content_type="text/markdown",
-                content=result_report_content,
-            )
-
-            await self._emit(
-                build_event(
-                    topic_id=topic_id,
-                    run_id=run_id,
-                    agent_id=AgentId.experiment,
-                    kind=EventKind.artifact_created,
-                    severity=Severity.info,
-                    summary="experiment produced results.json",
-                    payload={"handoffTo": "ideation", "artifactRole": "results", "metrics": metrics},
-                    artifacts=[results_artifact],
-                    trace_id=trace_id,
-                )
-            )
-            await self._emit(
-                build_event(
-                    topic_id=topic_id,
-                    run_id=run_id,
-                    agent_id=AgentId.experiment,
-                    kind=EventKind.artifact_created,
-                    severity=Severity.info,
-                    summary="experiment produced result.md",
-                    payload={"handoffTo": "ideation", "artifactRole": "result_report"},
-                    artifacts=[result_report_artifact],
-                    trace_id=trace_id,
-                )
-            )
-
-            feedback_upstream = (
-                f"{topic_anchor}\n\n"
-                "<result_json>\n"
-                f"{json.dumps(results_content, ensure_ascii=False, indent=2)}\n"
-                "</result_json>\n\n"
-                "<result_report>\n"
-                f"{result_report_content}\n"
-                "</result_report>"
-            )
-            feedback_subtasks = await self.generate_subtasks_plan(
-                AgentId.ideation,
-                "feedback",
-                topic_anchor,
-                feedback_upstream,
-                preferred_language,
-                topic_id=topic_id,
-                run_id=run_id,
-                trace_id=trace_id,
-            )
-            active_subtasks = feedback_subtasks
-            active_stage = "feedback"
-            active_agent = AgentId.ideation
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                stage="feedback",
-                subtasks=feedback_subtasks,
-                trace_id=trace_id,
-                summary="feedback subtasks planned",
-            )
-            feedback_subtasks = self._patch_subtask_state(
-                feedback_subtasks,
-                0,
-                status="running",
-                progress=0.2,
-            )
-            active_subtasks = feedback_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                stage="feedback",
-                subtasks=feedback_subtasks,
-                trace_id=trace_id,
-                summary="feedback subtask started",
-            )
-
-            await self._update_agent(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                status="running",
-                progress=0.7,
-                summary="ideation refining from experiment feedback",
-                trace_id=trace_id,
-            )
-            await self._emit(
-                build_event(
+            if ideation_executed and experiment_executed:
+                active_agent = AgentId.ideation
+                active_stage = "feedback"
+                await self._update_agent(
                     topic_id=topic_id,
                     run_id=run_id,
                     agent_id=AgentId.ideation,
-                    kind=EventKind.event_emitted,
-                    severity=Severity.info,
-                    summary="refining idea from results",
-                    payload={"stage": "feedback"},
+                    status="running",
+                    progress=0.75,
+                    summary="ideation refining from experiment feedback",
                     trace_id=trace_id,
                 )
-            )
-            await asyncio.sleep(self._step_sleep)
-
-            feedback_subtasks = self._patch_subtask_state(
-                feedback_subtasks,
-                0,
-                status="completed",
-            )
-            feedback_subtasks = self._patch_subtask_state(
-                feedback_subtasks,
-                1,
-                status="running",
-                progress=0.5,
-            )
-            active_subtasks = feedback_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                stage="feedback",
-                subtasks=feedback_subtasks,
-                trace_id=trace_id,
-            )
-
-            feedback_fallback = self._pick_by_lang(
-                preferred_language,
-                (
-                    "## 反馈计划（回退）\n"
-                    f"- 主题：{topic_title}\n"
-                    "- 保留：检索增强与置信度路由主路径。\n"
-                    "- 调整：增加候选方案多样性和难样本覆盖。\n"
-                    "- 验证：补充成本与延迟指标，确保目标对齐。\n"
-                ),
-                (
-                    "## Feedback Plan (Fallback)\n"
-                    f"- Topic: {topic_title}\n"
-                    "- Keep: retrieval augmentation and confidence routing core path.\n"
-                    "- Change: broaden candidate diversity and hard-case coverage.\n"
-                    "- Validate: add cost and latency metrics for objective alignment.\n"
-                ),
-            )
-            _ = await self._generate_text_content(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                trace_id=trace_id,
-                system_policy="You are the ideation feedback agent. Refine roadmap from experiment outcomes and topic constraints.",
-                upstream_content=(
-                    f"{topic_anchor}\n\n"
-                    "<result_json>\n"
-                    f"{json.dumps(results_content, ensure_ascii=False, indent=2)}\n"
-                    "</result_json>\n\n"
-                    "<result_report>\n"
-                    f"{result_report_content}\n"
-                    "</result_report>"
-                ),
-                final_task=(
-                    "Generate a concise feedback plan. Explain what to keep, what to change, and what to validate next. "
-                    "Every point must tie to the topic objective."
-                ),
-                fallback_content=feedback_fallback,
-                max_tokens=1000,
-            )
-
-            feedback_subtasks = self._patch_subtask_state(
-                feedback_subtasks,
-                1,
-                status="completed",
-            )
-            feedback_subtasks = self._patch_subtask_state(
-                feedback_subtasks,
-                2,
-                status="running",
-                progress=0.82,
-            )
-            active_subtasks = feedback_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                stage="feedback",
-                subtasks=feedback_subtasks,
-                trace_id=trace_id,
-            )
-
-            await asyncio.sleep(self._step_sleep * 0.5)
-
-            feedback_subtasks = self._patch_subtask_state(
-                feedback_subtasks,
-                2,
-                status="completed",
-            )
-            for index in range(3, len(feedback_subtasks)):
-                feedback_subtasks = self._patch_subtask_state(
-                    feedback_subtasks,
-                    index,
+                await self._emit(
+                    build_event(
+                        topic_id=topic_id,
+                        run_id=run_id,
+                        agent_id=AgentId.ideation,
+                        kind=EventKind.event_emitted,
+                        severity=Severity.info,
+                        summary="refining idea from results",
+                        payload={"stage": "feedback"},
+                        trace_id=trace_id,
+                    )
+                )
+                await self._generate_text_content(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    agent_id=AgentId.ideation,
+                    trace_id=trace_id,
+                    system_policy="You are the ideation feedback agent.",
+                    upstream_content=(
+                        f"{topic_anchor}\n\n"
+                        "<result_report>\n"
+                        f"{result_report_content}\n"
+                        "</result_report>"
+                    ),
+                    final_task="Generate a concise feedback plan.",
+                    fallback_content=self._pick_by_lang(
+                        preferred_language,
+                        "## Feedback Plan (Fallback)\n"
+                        "- Keep effective paths\n"
+                        "- Correct failed points\n"
+                        "- Define next validation metrics\n",
+                        "## Feedback Plan (Fallback)\n"
+                        "- Keep effective paths\n"
+                        "- Correct failed points\n"
+                        "- Define next validation metrics\n",
+                    ),
+                    llm_model=ideation_runtime.resolved_model,
+                    max_tokens=1000,
+                )
+                await self._update_agent(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    agent_id=AgentId.ideation,
                     status="completed",
                     progress=1.0,
+                    summary="ideation feedback loop completed",
+                    trace_id=trace_id,
                 )
-            active_subtasks = feedback_subtasks
-            await self._emit_subtasks_update(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                stage="feedback",
-                subtasks=feedback_subtasks,
-                trace_id=trace_id,
-                summary="feedback subtasks completed",
-            )
 
-            await self._update_agent(
+            await store.update_run_runtime(
+                run_id,
                 topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.ideation,
-                status="completed",
-                progress=1.0,
-                summary="ideation feedback loop completed",
-                trace_id=trace_id,
+                status="succeeded",
+                current_module=None,
+                awaiting_approval=False,
+                awaiting_module=None,
+                touch_ended_at=True,
             )
-
-            await store.update_run_status(topic_id, run_id, "completed")
             await self._emit(
                 build_event(
                     topic_id=topic_id,
@@ -1709,36 +1664,31 @@ class FakePipelineRunner:
         except Exception as exc:
             logger.exception("Pipeline crashed (topic=%s run=%s)", topic_id, run_id)
             try:
-                await store.update_run_status(topic_id, run_id, "failed")
+                await store.update_run_runtime(
+                    run_id,
+                    topic_id=topic_id,
+                    status="failed",
+                    current_module=active_module_runtime.module if active_module_runtime else None,
+                    awaiting_approval=False,
+                    awaiting_module=None,
+                    touch_ended_at=True,
+                )
             except Exception:
                 return
 
-            failed_agent = active_agent or AgentId.experiment
-            failed_stage: StageName = active_stage or "experiment"
-            failed_subtasks = self._mark_running_subtasks_failed(active_subtasks or [])
-            if failed_subtasks:
-                try:
-                    await self._emit_subtasks_update(
-                        topic_id=topic_id,
-                        run_id=run_id,
-                        agent_id=failed_agent,
-                        stage=failed_stage,
-                        subtasks=failed_subtasks,
-                        trace_id=trace_id,
-                        severity=Severity.error,
-                        summary=f"{failed_stage} subtasks failed due to pipeline crash",
-                    )
-                except Exception:
-                    logger.exception(
-                        "Failed to emit subtask failure update (topic=%s run=%s)",
-                        topic_id,
-                        run_id,
-                    )
+            if active_module_runtime is not None and not module_failure_emitted:
+                await self._emit_module_failed(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    trace_id=trace_id,
+                    module_runtime=active_module_runtime,
+                    exc=exc,
+                )
 
             await self._update_agent(
                 topic_id=topic_id,
                 run_id=run_id,
-                agent_id=failed_agent,
+                agent_id=active_agent,
                 status="failed",
                 progress=1.0,
                 summary="pipeline failed",
@@ -1748,7 +1698,7 @@ class FakePipelineRunner:
                 build_event(
                     topic_id=topic_id,
                     run_id=run_id,
-                    agent_id=failed_agent,
+                    agent_id=active_agent,
                     kind=EventKind.event_emitted,
                     severity=Severity.error,
                     summary="pipeline crashed",
@@ -1756,6 +1706,8 @@ class FakePipelineRunner:
                     trace_id=trace_id,
                 )
             )
+        finally:
+            await approval_manager.clear_run(run_id)
 
 
 fake_runner = FakePipelineRunner()

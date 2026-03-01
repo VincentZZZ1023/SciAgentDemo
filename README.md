@@ -1,13 +1,13 @@
 ﻿# SciAgentDemo
 
 一个可联调的科研多 Agent 开发者控制台 Demo。  
-技术栈：`FastAPI + WebSocket + SQLite + React(Vite/TS) + React Flow`。
+技术栈：`FastAPI + WebSocket + PostgreSQL + Alembic + React(Vite/TS) + React Flow`。
 
 ## 当前能力
 
 - 三 Agent 自动闭环：`review -> ideation -> experiment -> ideation(feedback)`
 - 真实 REST + 真实 WS（不依赖 mock 业务数据）
-- SQLite 持久化（topics/runs/events/messages/artifacts）
+- PostgreSQL 持久化（topics/runs/events/messages/artifacts）
 - Artifact 文件落盘与鉴权读取
 - Topic Trace 时间线（List/Graph）
 - Agent Drawer（Logs / Artifacts / Context / Chat）
@@ -40,7 +40,7 @@
 1. 前端登录获取 JWT，后续 REST/WS 都带 token。
 2. 进入 topic 时先拉 `snapshot`，再连 `WS` 接收实时事件。
 3. 点击 `Run` 后，后端异步执行 pipeline 并持续广播事件。
-4. Agent 产物写入 `backend/data/artifacts/{topicId}/{runId}/`，元数据写入 SQLite。
+4. Agent 产物写入 `backend/data/artifacts/{topicId}/{runId}/`，元数据写入 PostgreSQL。
 5. Trace 视图从 `/api/topics/{topicId}/trace` 拉历史，并由 WS 增量追加。
 
 ## CLI 输入如何影响系统
@@ -69,6 +69,9 @@
 
 - 自动重启（先停旧进程，再启动）
 - 自动清理本项目残留的 `uvicorn/vite` 端口占用
+- 自动拉起 `docker compose` 的 `postgres`（若可用）
+- 自动执行 `backend` 的 `alembic upgrade head`
+- 数据库运行时仅支持 PostgreSQL；若你有历史 `backend/data.db`，请使用 `backend/scripts/migrate_sqlite_to_postgres.py` 做一次性迁移
 - 若端口已被健康服务占用，会自动复用现有 backend/frontend，避免重复报错
 - 自动检测依赖：缺少 `uvicorn` 或 `frontend/node_modules` 时会自动安装
 
@@ -76,6 +79,7 @@
 
 ```powershell
 .\dev-up.ps1 -Quick
+.\dev-up.ps1 -Test
 .\dev-up.ps1 -InstallDeps
 .\dev-up.ps1 -OpenBrowser
 .\dev-up.ps1 -Stop
@@ -83,6 +87,8 @@
 .\dev-up.ps1 -NoRestart
 .\dev-up.ps1 -ForceCleanPorts
 .\dev-up.ps1 -RequireDeepSeek
+.\dev-up.ps1 -SkipDocker
+.\dev-up.ps1 -SkipMigrate
 .\dev-up.ps1 -ReadyTimeoutSec 45
 .\dev-up.ps1 -DryRun
 ```
@@ -90,7 +96,11 @@
 说明：
 
 - `-Quick` = `-Restart + -ForceCleanPorts + -OpenBrowser`，适合日常测试。
-- 双击 `dev-up.bat` 默认就是 `-Quick` 模式。
+- `-Test` = `-Quick` + 自动登录 demo + 自动确保 topic + 自动创建 run，并打开到 `/app/{topicId}?runId=...`。
+- `-SkipDocker`：不自动拉起 docker compose postgres（你自己管理数据库时用）。
+- `-SkipMigrate`：跳过自动 Alembic 迁移。
+- 双击 `dev-up.bat` 默认就是 `-OneClick` 模式（含数据库自举）。
+- 双击 `dev-test.bat` 可直接进入 `-Test` 模式。
 - `-Status` 可快速查看前后端是否在线、端口占用和已记录 PID。
 
 ### 手动启动

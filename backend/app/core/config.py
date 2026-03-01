@@ -4,6 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -18,9 +19,13 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-jwt-secret-change-me"
     access_token_expire_minutes: int = 60
     backend_base_url: str = "http://localhost:8000"
-    cors_origins: list[str] = ["http://localhost:5173"]
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://0.0.0.0:5173",
+    ]
 
-    database_url: str = "sqlite:///./data.db"
+    database_url: str = "postgresql+psycopg2://sciagent:sciagent@localhost:5432/sciagent"
     artifacts_root: str = "data/artifacts"
 
     deepseek_api_key: str | None = None
@@ -31,6 +36,18 @@ class Settings(BaseSettings):
     deepseek_retry_backoff_seconds: float = 1.5
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return []
+            if stripped.startswith("["):
+                return value
+            return [item.strip() for item in stripped.split(",") if item.strip()]
+        return value
 
 
 @lru_cache

@@ -7,12 +7,14 @@ import {
   Routes,
   useLocation,
   useNavigate,
+  useParams,
 } from "react-router-dom";
 import {
   getAccessToken,
   setUnauthorizedHandler,
   validateAccessToken,
 } from "../api/client";
+import { AppCenterPage } from "../pages/AppCenterPage";
 import { LoginPage } from "../pages/LoginPage";
 import { TopicPage } from "../pages/TopicPage";
 import { AppLayout } from "./AppLayout";
@@ -78,7 +80,14 @@ const AuthGuard = () => {
 };
 
 const HomeRedirect = () => {
-  return <Navigate to={getAccessToken() ? "/topics" : "/login"} replace />;
+  return <Navigate to={getAccessToken() ? "/app-center" : "/login"} replace />;
+};
+
+const LegacyTopicsRedirect = () => {
+  const location = useLocation();
+  const { topicId } = useParams();
+  const path = topicId ? `/app/${topicId}` : "/app";
+  return <Navigate to={`${path}${location.search}`} replace />;
 };
 
 export const AppRoutes = () => {
@@ -89,10 +98,13 @@ export const AppRoutes = () => {
         <Route path="/login" element={<LoginPage />} />
 
         <Route element={<AuthGuard />}>
-          <Route path="/topics" element={<AppLayout />}>
+          <Route path="/app-center" element={<AppCenterPage />} />
+          <Route path="/app" element={<AppLayout />}>
             <Route index element={<TopicPage />} />
             <Route path=":topicId" element={<TopicPage />} />
           </Route>
+          <Route path="/topics" element={<LegacyTopicsRedirect />} />
+          <Route path="/topics/:topicId" element={<LegacyTopicsRedirect />} />
         </Route>
 
         <Route path="/" element={<HomeRedirect />} />

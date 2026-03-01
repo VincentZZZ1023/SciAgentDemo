@@ -8,9 +8,12 @@ param(
   [switch]$Restart,
   [switch]$OneClick,
   [switch]$Quick,
+  [switch]$Test,
   [switch]$NoRestart,
   [switch]$ForceCleanPorts,
   [switch]$RequireDeepSeek,
+  [switch]$SkipDocker,
+  [switch]$SkipMigrate,
   [int]$ReadyTimeoutSec = 30
 )
 
@@ -20,27 +23,91 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BackendDir = Join-Path $RepoRoot "backend"
 $FrontendDir = Join-Path $RepoRoot "frontend"
+$ComposeFile = Join-Path $RepoRoot "docker-compose.yml"
 $StateDir = Join-Path $RepoRoot ".dev"
 $PidFile = Join-Path $StateDir "dev-up.pids.json"
 $BackendPort = 8000
 $FrontendPort = 5173
+$PostgresPort = 5432
 
 $AutoOneClick = ($PSBoundParameters.Count -eq 0)
 if ($AutoOneClick) {
   $OneClick = $true
 }
 
-$EffectiveRestart = $Restart -or $Quick -or $OneClick -or (-not $NoRestart)
-$EffectiveForceCleanPorts = $ForceCleanPorts -or $Quick -or $OneClick
-$EffectiveOpenBrowser = $OpenBrowser -or $Quick -or $OneClick
+$EffectiveRestart = $Restart -or $Quick -or $OneClick -or $Test -or (-not $NoRestart)
+$EffectiveForceCleanPorts = $ForceCleanPorts -or $Quick -or $OneClick -or $Test
+$EffectiveOpenBrowser = $OpenBrowser -or $Quick -or $OneClick -or $Test
+$ConfiguredDatabaseUrl = $null
+foreach ($candidate in @((Join-Path $RepoRoot ".env"), (Join-Path $BackendDir ".env"))) {
+  if (-not (Test-Path $candidate)) {
+    continue
+  }
+
+  foreach ($line in Get-Content -Path $candidate) {
+    if ($line.TrimStart().StartsWith("#")) {
+      continue
+    }
+    if ($line -match "^\s*DATABASE_URL\s*=\s*(.*)\s*$") {
+      $value = $Matches[1].Trim()
+      if ($value.StartsWith("'") -and $value.EndsWith("'") -and $value.Length -ge 2) {
+        $value = $value.Substring(1, $value.Length - 2)
+      }
+      elseif ($value.StartsWith('"') -and $value.EndsWith('"') -and $value.Length -ge 2) {
+        $value = $value.Substring(1, $value.Length - 2)
+      }
+
+      if (-not [string]::IsNullOrWhiteSpace($value)) {
+        $ConfiguredDatabaseUrl = $value
+        break
+      }
+    }
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($ConfiguredDatabaseUrl)) {
+    break
+  }
+}
+if ([string]::IsNullOrWhiteSpace($ConfiguredDatabaseUrl) -and -not [string]::IsNullOrWhiteSpace($env:DATABASE_URL)) {
+  $ConfiguredDatabaseUrl = $env:DATABASE_URL
+}
+if ([string]::IsNullOrWhiteSpace($ConfiguredDatabaseUrl)) {
+  $ConfiguredDatabaseUrl = "postgresql+psycopg2://sciagent:sciagent@localhost:5432/sciagent"
+}
+$env:DATABASE_URL = $ConfiguredDatabaseUrl
+$UsingPostgres = $ConfiguredDatabaseUrl.ToLowerInvariant().StartsWith("postgresql")
+$EffectiveAutoMigrate = (-not $SkipMigrate)
+$EffectiveDockerBootstrap = (-not $SkipDocker) -and ($OneClick -or $Quick -or $Test) -and $UsingPostgres
 $AutoRestart = $EffectiveRestart -and (-not $DryRun)
 
-if ($OneClick -and -not $Quick) {
-  Write-Host "[dev-up] One-click mode enabled: restart + force-clean ports + open browser." -ForegroundColor Cyan
+if (-not $Stop -and -not $Status -and -not $UsingPostgres) {
+  throw "SQLite is no longer supported for runtime. Set DATABASE_URL to PostgreSQL in .env before starting."
 }
 
-if ($Quick) {
-  Write-Host "[dev-up] Quick mode enabled: restart + force-clean ports + open browser." -ForegroundColor Cyan
+if (-not $Stop -and -not $Status) {
+  if ($OneClick -and -not $Quick) {
+    Write-Host "[dev-up] One-click mode enabled: restart + force-clean ports + open browser." -ForegroundColor Cyan
+  }
+
+  if ($Quick) {
+    Write-Host "[dev-up] Quick mode enabled: restart + force-clean ports + open browser." -ForegroundColor Cyan
+  }
+
+  if ($Test) {
+    Write-Host "[dev-up] Test mode enabled: quick API smoke + auto topic/run + open browser to run panel." -ForegroundColor Cyan
+  }
+
+  if ($EffectiveAutoMigrate) {
+    if ($EffectiveDockerBootstrap) {
+      Write-Host "[dev-up] DB bootstrap enabled: docker postgres + alembic migrate." -ForegroundColor Cyan
+    }
+    else {
+      if (-not $UsingPostgres) {
+        Write-Host "[dev-up] DATABASE_URL points to non-Postgres ($ConfiguredDatabaseUrl). Skipping docker postgres bootstrap." -ForegroundColor DarkYellow
+      }
+      Write-Host "[dev-up] DB migrate enabled: alembic upgrade head." -ForegroundColor Cyan
+    }
+  }
 }
 
 function Require-Command {
@@ -111,6 +178,193 @@ function Resolve-DeepSeekApiKey {
   }
 
   return $null
+}
+
+function Resolve-DatabaseUrl {
+  $rootEnv = Join-Path $RepoRoot ".env"
+  $backendEnv = Join-Path $BackendDir ".env"
+
+  $rootValue = Get-EnvValueFromFile -Path $rootEnv -Name "DATABASE_URL"
+  if (-not [string]::IsNullOrWhiteSpace($rootValue)) {
+    return $rootValue
+  }
+
+  $backendValue = Get-EnvValueFromFile -Path $backendEnv -Name "DATABASE_URL"
+  if (-not [string]::IsNullOrWhiteSpace($backendValue)) {
+    return $backendValue
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($env:DATABASE_URL)) {
+    return $env:DATABASE_URL
+  }
+
+  return "postgresql+psycopg2://sciagent:sciagent@localhost:5432/sciagent"
+}
+
+function Get-BackendPythonCommand {
+  $venvPython = Join-Path $BackendDir ".venv\Scripts\python.exe"
+  if (Test-Path $venvPython) {
+    return $venvPython
+  }
+  return "python"
+}
+
+function Get-ComposeRunner {
+  if (Get-Command docker -ErrorAction SilentlyContinue) {
+    try {
+      & docker compose version *> $null
+      if ($LASTEXITCODE -eq 0) {
+        return "docker-compose-v2"
+      }
+    }
+    catch {
+      # fallback to docker-compose binary check below
+    }
+  }
+
+  if (Get-Command docker-compose -ErrorAction SilentlyContinue) {
+    return "docker-compose-v1"
+  }
+
+  return $null
+}
+
+function Invoke-ComposeCommand {
+  param(
+    [string]$Runner,
+    [string[]]$ComposeArgs
+  )
+
+  if ($Runner -eq "docker-compose-v2") {
+    & docker compose @ComposeArgs
+    return
+  }
+
+  if ($Runner -eq "docker-compose-v1") {
+    & docker-compose @ComposeArgs
+    return
+  }
+
+  throw "No docker compose runner available."
+}
+
+function Wait-TcpPort {
+  param(
+    [string]$HostName,
+    [int]$Port,
+    [int]$TimeoutSec = 20
+  )
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSec)
+  while ((Get-Date) -lt $deadline) {
+    $client = $null
+    try {
+      $client = [System.Net.Sockets.TcpClient]::new()
+      $task = $client.ConnectAsync($HostName, $Port)
+      if ($task.Wait(400) -and $client.Connected) {
+        return $true
+      }
+    }
+    catch {
+      # keep waiting
+    }
+    finally {
+      if ($null -ne $client) {
+        $client.Dispose()
+      }
+    }
+
+    Start-Sleep -Milliseconds 400
+  }
+
+  return $false
+}
+
+function Start-PostgresIfNeeded {
+  $dbUrl = Resolve-DatabaseUrl
+  if (-not $dbUrl.ToLowerInvariant().StartsWith("postgresql")) {
+    Write-Host "[dev-up] DATABASE_URL is not PostgreSQL. Skip docker postgres bootstrap." -ForegroundColor DarkYellow
+    return
+  }
+
+  if (-not (Test-Path $ComposeFile)) {
+    Write-Host "[dev-up] docker-compose.yml not found. Skipping docker DB bootstrap." -ForegroundColor DarkYellow
+    return
+  }
+
+  $runner = Get-ComposeRunner
+  if ($null -eq $runner) {
+    Write-Host "[dev-up] Docker Compose not found. Assuming external PostgreSQL is already running." -ForegroundColor DarkYellow
+    return
+  }
+
+  Write-Host "[dev-up] Starting PostgreSQL via Docker Compose..." -ForegroundColor Cyan
+  Push-Location $RepoRoot
+  try {
+    Invoke-ComposeCommand -Runner $runner -ComposeArgs @("up", "-d", "postgres")
+    if ($LASTEXITCODE -ne 0) {
+      throw "docker compose up -d postgres failed."
+    }
+  }
+  finally {
+    Pop-Location
+  }
+
+  if (Wait-TcpPort -HostName "127.0.0.1" -Port $PostgresPort -TimeoutSec 25) {
+    Write-Host "[dev-up] PostgreSQL is reachable on localhost:$PostgresPort" -ForegroundColor Green
+  }
+  else {
+    Write-Warning "[dev-up] PostgreSQL did not become reachable in time. Migration may fail if DB is not ready."
+  }
+}
+
+function Run-AlembicUpgrade {
+  $pythonCmd = Get-BackendPythonCommand
+  $dbUrl = Resolve-DatabaseUrl
+  $env:DATABASE_URL = $dbUrl
+
+  Write-Host "[dev-up] Running Alembic migrations (upgrade head)..." -ForegroundColor Cyan
+  Push-Location $BackendDir
+  try {
+    $upgradeOutput = & $pythonCmd -m alembic upgrade head 2>&1
+    $upgradeExitCode = $LASTEXITCODE
+    if ($null -ne $upgradeOutput) {
+      $upgradeOutput | ForEach-Object { Write-Host $_ }
+    }
+    if ($upgradeExitCode -ne 0) {
+      $upgradeText = ""
+      if ($null -ne $upgradeOutput) {
+        $upgradeText = ($upgradeOutput | Out-String)
+      }
+      $looksLikeDuplicateSchema = (
+        $upgradeText -match "already exists" -or
+        $upgradeText -match "DuplicateTable"
+      )
+
+      if ($looksLikeDuplicateSchema) {
+        Write-Warning "[dev-up] Alembic detected existing schema without version state. Attempting 'alembic stamp head' repair..."
+        & $pythonCmd -m alembic stamp head
+        if ($LASTEXITCODE -ne 0) {
+          throw "alembic stamp head failed during automatic repair."
+        }
+
+        $retryOutput = & $pythonCmd -m alembic upgrade head 2>&1
+        $retryExitCode = $LASTEXITCODE
+        if ($null -ne $retryOutput) {
+          $retryOutput | ForEach-Object { Write-Host $_ }
+        }
+        if ($retryExitCode -ne 0) {
+          throw "alembic upgrade head failed after automatic repair."
+        }
+      }
+      else {
+        throw "alembic upgrade head failed."
+      }
+    }
+  }
+  finally {
+    Pop-Location
+  }
 }
 
 function Is-ProcessAlive {
@@ -525,6 +779,98 @@ function Test-HttpReadyOnce {
   }
 }
 
+function Invoke-JsonRequest {
+  param(
+    [ValidateSet("GET", "POST", "PUT", "PATCH", "DELETE")]
+    [string]$Method,
+    [string]$Url,
+    [hashtable]$Headers = @{},
+    [object]$Body = $null,
+    [int]$TimeoutSec = 15
+  )
+
+  $params = @{
+    Method = $Method
+    Uri = $Url
+    TimeoutSec = $TimeoutSec
+    ErrorAction = "Stop"
+  }
+
+  if ($Headers.Count -gt 0) {
+    $params["Headers"] = $Headers
+  }
+
+  if ($null -ne $Body) {
+    $params["ContentType"] = "application/json"
+    $params["Body"] = ($Body | ConvertTo-Json -Depth 12 -Compress)
+  }
+
+  return Invoke-RestMethod @params
+}
+
+function Invoke-QuickUiTest {
+  param(
+    [string]$BackendBaseUrl,
+    [string]$FrontendBaseUrl
+  )
+
+  Write-Host "[dev-up] Running quick API smoke..." -ForegroundColor Cyan
+
+  $login = Invoke-JsonRequest -Method "POST" -Url "$BackendBaseUrl/api/auth/login" -Body @{
+    username = "demo"
+    password = "demo"
+  }
+
+  $token = [string]$login.access_token
+  if ([string]::IsNullOrWhiteSpace($token)) {
+    throw "Login failed in test mode: access_token is missing."
+  }
+
+  $authHeaders = @{
+    Authorization = "Bearer $token"
+  }
+
+  # Validate default run config contract.
+  [void](Invoke-JsonRequest -Method "GET" -Url "$BackendBaseUrl/api/config/default" -Headers $authHeaders)
+
+  $topicsResponse = Invoke-JsonRequest -Method "GET" -Url "$BackendBaseUrl/api/topics" -Headers $authHeaders
+  $topicId = $null
+  $topicItems = @()
+  if ($null -ne $topicsResponse -and $null -ne $topicsResponse.items) {
+    $topicItems = @($topicsResponse.items)
+  }
+  if ($topicItems.Count -gt 0) {
+    $topicId = [string]$topicItems[0].topicId
+  }
+
+  if ([string]::IsNullOrWhiteSpace($topicId)) {
+    $topicTitle = "quick-test-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+    $created = Invoke-JsonRequest -Method "POST" -Url "$BackendBaseUrl/api/topics" -Headers $authHeaders -Body @{
+      name = $topicTitle
+      description = "Auto-created by dev-up.ps1 -Test"
+    }
+    $topicId = [string]$created.topicId
+  }
+
+  $run = Invoke-JsonRequest -Method "POST" -Url "$BackendBaseUrl/api/topics/$topicId/runs" -Headers $authHeaders -Body @{
+    prompt = "Quick smoke run triggered by dev-up.ps1 -Test"
+  }
+
+  $runId = if ($null -ne $run -and $null -ne $run.runId) { [string]$run.runId } else { "" }
+  $launchUrl = if ([string]::IsNullOrWhiteSpace($runId)) {
+    "$FrontendBaseUrl/app/$topicId"
+  }
+  else {
+    "$FrontendBaseUrl/app/$topicId?runId=$([System.Uri]::EscapeDataString($runId))"
+  }
+
+  return @{
+    topicId = $topicId
+    runId = $runId
+    launchUrl = $launchUrl
+  }
+}
+
 function Show-DevStatus {
   $backendHealthy = Test-HttpReadyOnce -Url "http://127.0.0.1:$BackendPort/api/health" -TimeoutSec 2
   $frontendHealthy = Test-HttpReadyOnce -Url "http://127.0.0.1:$FrontendPort" -TimeoutSec 2
@@ -652,6 +998,10 @@ if ($needFrontendDeps) {
 $ReuseBackend = $false
 $ReuseFrontend = $false
 
+if (-not $DryRun -and $EffectiveDockerBootstrap) {
+  Start-PostgresIfNeeded
+}
+
 if (-not $DryRun) {
   if (Test-PortBindable -Port $BackendPort) {
     # Backend port is free, start a new backend process.
@@ -676,14 +1026,21 @@ if (-not $DryRun) {
   }
 }
 
+if (-not $DryRun -and $EffectiveAutoMigrate) {
+  if ($ReuseBackend) {
+    Write-Host "[dev-up] Backend is being reused. Skipping automatic migration step." -ForegroundColor DarkYellow
+  }
+  else {
+    Run-AlembicUpgrade
+  }
+}
+
+$BackendPythonCmd = Get-BackendPythonCommand
+$BackendPythonEscaped = $BackendPythonCmd.Replace("'", "''")
 $backendCommand = @"
 `$host.UI.RawUI.WindowTitle = 'SciAgentDemo Backend'
 Set-Location -Path '$BackendDir'
-if (Test-Path '.venv\Scripts\python.exe') {
-  & '.venv\Scripts\python.exe' -m uvicorn app.main:app --reload --host 0.0.0.0 --port $BackendPort
-} else {
-  python -m uvicorn app.main:app --reload --host 0.0.0.0 --port $BackendPort
-}
+& '$BackendPythonEscaped' -m uvicorn app.main:app --reload --host 0.0.0.0 --port $BackendPort
 "@
 
 $frontendCommand = @"
@@ -693,6 +1050,12 @@ npm run dev -- --host 0.0.0.0 --port $FrontendPort
 "@
 
 if ($DryRun) {
+  if ($EffectiveDockerBootstrap) {
+    Write-Host "[dry-run] DB bootstrap: docker compose up -d postgres" -ForegroundColor Yellow
+  }
+  if ($EffectiveAutoMigrate) {
+    Write-Host "[dry-run] DB migrate: cd backend && $(Get-BackendPythonCommand) -m alembic upgrade head" -ForegroundColor Yellow
+  }
   Write-Host "[dry-run] Backend command:" -ForegroundColor Yellow
   Write-Host $backendCommand
   Write-Host "[dry-run] Frontend command:" -ForegroundColor Yellow
@@ -765,6 +1128,35 @@ else {
   Write-Warning "[dev-up] Services did not become ready in $ReadyTimeoutSec seconds. Check the opened terminals."
 }
 
+$BrowserUrl = "http://localhost:$FrontendPort"
+
+if ($Test) {
+  if ($backendReady -and $frontendReady) {
+    try {
+      $testResult = Invoke-QuickUiTest -BackendBaseUrl "http://127.0.0.1:$BackendPort" -FrontendBaseUrl "http://localhost:$FrontendPort"
+      $topicId = [string]$testResult.topicId
+      $runId = [string]$testResult.runId
+      $BrowserUrl = [string]$testResult.launchUrl
+
+      if ([string]::IsNullOrWhiteSpace($runId)) {
+        Write-Host "[dev-up] Test run created topic=$topicId (runId unavailable)." -ForegroundColor Green
+      }
+      else {
+        Write-Host "[dev-up] Test run created topic=$topicId runId=$runId" -ForegroundColor Green
+      }
+      Write-Host "[dev-up] Test launch URL: $BrowserUrl" -ForegroundColor Green
+    }
+    catch {
+      Write-Warning "[dev-up] Test mode smoke failed: $($_.Exception.Message)"
+      Write-Warning "[dev-up] Falling back to default frontend URL."
+      $BrowserUrl = "http://localhost:$FrontendPort"
+    }
+  }
+  else {
+    Write-Warning "[dev-up] Skipping test-mode smoke because services are not ready."
+  }
+}
+
 if ($EffectiveOpenBrowser) {
-  Start-Process "http://localhost:$FrontendPort"
+  Start-Process $BrowserUrl
 }

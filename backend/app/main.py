@@ -11,7 +11,7 @@ settings = get_settings()
 app = FastAPI(
     title="SciAgentDemo Backend",
     version="0.3.0",
-    description="FastAPI backend with REST/WS contract, SQLite persistence, and fake runner",
+    description="FastAPI backend with REST/WS contract, PostgreSQL persistence, and fake runner",
 )
 
 app.add_middleware(

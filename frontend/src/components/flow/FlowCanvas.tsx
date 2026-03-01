@@ -18,6 +18,15 @@ interface FlowCanvasProps {
   onSelectAgent: (agentId: AgentId) => void;
 }
 
+const DEFAULT_AGENT_STATUS: AgentStatus = {
+  agentId: "review",
+  status: "idle",
+  progress: 0,
+  lastUpdate: 0,
+  runId: null,
+  lastSummary: "idle",
+};
+
 const NODE_POSITIONS: Record<AgentId, { x: number; y: number }> = {
   review: { x: 24, y: 144 },
   ideation: { x: 396, y: 32 },
@@ -92,18 +101,27 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
 
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
   const flowInstanceRef = useRef<ReactFlowInstance | null>(null);
+  const safeAgentStatus = useMemo<Record<AgentId, AgentStatus>>(
+    () => ({
+      review: agentsStatus.review ?? { ...DEFAULT_AGENT_STATUS, agentId: "review" },
+      ideation: agentsStatus.ideation ?? { ...DEFAULT_AGENT_STATUS, agentId: "ideation" },
+      experiment: agentsStatus.experiment ?? { ...DEFAULT_AGENT_STATUS, agentId: "experiment" },
+    }),
+    [agentsStatus],
+  );
 
   const nodes = useMemo<Node[]>(() => {
     const nextNodes: Node[] = [];
 
     (Object.keys(NODE_POSITIONS) as AgentId[]).forEach((agentId) => {
-      const agent = agentsStatus[agentId];
+      const agent = safeAgentStatus[agentId];
       const subtasks = agentSubtasks[agentId] ?? [];
       const statusClass = `status-badge status-${normalizeStatus(agent.status)}`;
       const parentHeight = calcParentHeight(subtasks.length);
 
       nextNodes.push({
         id: agentId,
+        type: "default",
         position: NODE_POSITIONS[agentId],
         className: "flow-agent-node",
         data: {
@@ -123,20 +141,24 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
         },
         style: {
           borderRadius: 16,
-          border: "1px solid var(--card-border)",
-          background: "var(--card-bg)",
+          border: "1px solid var(--border)",
+          background: "var(--surface)",
           color: "var(--text)",
           width: PARENT_NODE_WIDTH,
           height: parentHeight,
           padding: 12,
-          boxShadow: "var(--shadow-card)",
+          boxShadow: "var(--shadow-sm)",
         },
       });
 
       subtasks.forEach((subtask, index) => {
         const subtaskStatus = normalizeSubtaskStatus(subtask.status);
+        const progress = Number.isFinite(subtask.progress)
+          ? Math.max(0, Math.min(1, subtask.progress))
+          : 0;
         nextNodes.push({
           id: `${agentId}:subtask:${subtask.id}`,
+          type: "default",
           parentId: agentId,
           extent: "parent",
           draggable: false,
@@ -152,7 +174,7 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
               <div className="flow-subtask-row">
                 <span className="flow-subtask-name">{subtask.name}</span>
                 <span className={`flow-subtask-badge subtask-${subtaskStatus}`}>
-                  {subtask.status} {Math.round(subtask.progress * 100)}%
+                  {subtask.status} {Math.round(progress * 100)}%
                 </span>
               </div>
             ),
@@ -171,7 +193,7 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
     });
 
     return nextNodes;
-  }, [agentSubtasks, agentsStatus]);
+  }, [agentSubtasks, safeAgentStatus]);
 
   const edges = useMemo<Edge[]>(() => {
     return EDGES.map((edge) => ({
@@ -189,9 +211,13 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
     const frame = window.requestAnimationFrame(() => {
       flowInstanceRef.current?.fitView({ padding: 0.2, duration: 180 });
     });
+    const timer = window.setTimeout(() => {
+      flowInstanceRef.current?.fitView({ padding: 0.2, duration: 0 });
+    }, 300);
 
     return () => {
       window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
     };
   }, [theme, nodes.length]);
 
@@ -225,6 +251,7 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
   return (
     <div className="flow-canvas" ref={flowContainerRef}>
       <ReactFlow
+        style={{ width: "100%", height: "100%" }}
         nodes={nodes}
         edges={edges}
         fitView
@@ -232,6 +259,9 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
         maxZoom={1.8}
         onInit={(instance) => {
           flowInstanceRef.current = instance;
+          window.requestAnimationFrame(() => {
+            flowInstanceRef.current?.fitView({ padding: 0.2, duration: 0 });
+          });
         }}
         onNodeClick={handleNodeClick}
       >

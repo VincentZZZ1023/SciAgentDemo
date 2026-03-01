@@ -4,39 +4,26 @@ import asyncio
 import json
 import shutil
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
 
-from sqlalchemy import desc
-from sqlmodel import SQLModel, Session, create_engine, delete, select
+from sqlalchemy import desc, inspect
+from sqlmodel import Session, delete, select
 
 from app.core.config import BACKEND_DIR, get_settings
+from app.db import DATABASE_URL, ENGINE, SessionLocal
 from app.models.db_models import ArtifactTable, EventTable, MessageTable, RunTable, TopicTable
 from app.models.schemas import AgentId, ArtifactRef, Event, EventKind, MessageRole, TraceItemKind
 
 AGENT_ORDER = [AgentId.review, AgentId.ideation, AgentId.experiment]
+RUN_ACTIVE_STATUSES = {"queued", "running", "paused"}
+RUN_TERMINAL_STATUSES = {"succeeded", "failed", "canceled", "completed", "stopped"}
+_UNSET = object()
 
 
 def now_ms() -> int:
     return int(time.time() * 1000)
-
-
-def _resolve_database_url() -> str:
-    settings = get_settings()
-    database_url = settings.database_url
-
-    if database_url.startswith("sqlite:///"):
-        raw_path = database_url.replace("sqlite:///", "", 1)
-        if raw_path and raw_path != ":memory:":
-            db_path = Path(raw_path)
-            if not db_path.is_absolute():
-                db_path = (BACKEND_DIR / db_path).resolve()
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            database_url = f"sqlite:///{db_path.as_posix()}"
-
-    return database_url
 
 
 def _resolve_artifacts_root() -> Path:
@@ -52,8 +39,12 @@ def _json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _json_loads(value: str | None) -> object | None:
+def _json_loads(value: object | None) -> object | None:
     if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str):
         return None
     try:
         return json.loads(value)
@@ -61,17 +52,34 @@ def _json_loads(value: str | None) -> object | None:
         return None
 
 
-DATABASE_URL = _resolve_database_url()
 ARTIFACTS_ROOT = _resolve_artifacts_root()
-ENGINE = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
-)
+
+_CORE_TABLES = ("topics", "runs", "events", "artifacts", "messages")
 
 
 def init_db() -> None:
-    SQLModel.metadata.create_all(ENGINE)
     ARTIFACTS_ROOT.mkdir(parents=True, exist_ok=True)
+
+    with ENGINE.connect() as connection:
+        inspector = inspect(connection)
+        has_alembic_version = inspector.has_table("alembic_version")
+        has_any_core_table = any(
+            inspector.has_table(table_name) for table_name in _CORE_TABLES
+        )
+
+    if has_alembic_version:
+        return
+
+    if has_any_core_table:
+        raise RuntimeError(
+            "Database schema exists but Alembic is not initialized. "
+            "Run `alembic stamp head` then `alembic upgrade head` to align migration state."
+        )
+
+    raise RuntimeError(
+        "Database schema is not initialized. Run `cd backend && alembic upgrade head` first. "
+        f"Current DATABASE_URL={DATABASE_URL!r}"
+    )
 
 
 class DatabaseStore:
@@ -84,9 +92,9 @@ class DatabaseStore:
             select(RunTable.id)
             .where(
                 RunTable.topic_id == topic_id,
-                RunTable.status.in_(["queued", "running"]),
+                RunTable.status.in_(RUN_ACTIVE_STATUSES),
             )
-            .order_by(desc(RunTable.started_at))
+            .order_by(desc(RunTable.created_at))
             .limit(1)
         ).first()
         if active_run_id:
@@ -95,7 +103,7 @@ class DatabaseStore:
         latest_run_id = session.exec(
             select(RunTable.id)
             .where(RunTable.topic_id == topic_id)
-            .order_by(desc(RunTable.started_at))
+            .order_by(desc(RunTable.created_at))
             .limit(1)
         ).first()
         return latest_run_id
@@ -104,7 +112,7 @@ class DatabaseStore:
         last_run_id = session.exec(
             select(RunTable.id)
             .where(RunTable.topic_id == topic_id)
-            .order_by(desc(RunTable.started_at))
+            .order_by(desc(RunTable.created_at))
             .limit(1)
         ).first()
 
@@ -112,9 +120,9 @@ class DatabaseStore:
             select(RunTable.id)
             .where(
                 RunTable.topic_id == topic_id,
-                RunTable.status.in_(["queued", "running"]),
+                RunTable.status.in_(RUN_ACTIVE_STATUSES),
             )
-            .order_by(desc(RunTable.started_at))
+            .order_by(desc(RunTable.created_at))
             .limit(1)
         ).first()
 
@@ -154,6 +162,22 @@ class DatabaseStore:
                 f"?artifactId={quote(artifact.artifact_id)}"
             ),
             "contentType": artifact.content_type,
+        }
+
+    @staticmethod
+    def _run_to_payload(run: RunTable) -> dict:
+        config = run.config_json if isinstance(run.config_json, dict) else {}
+        return {
+            "runId": run.id,
+            "topicId": run.topic_id,
+            "status": run.status,
+            "createdAt": run.created_at,
+            "startedAt": run.started_at,
+            "endedAt": run.ended_at,
+            "config": config,
+            "currentModule": run.current_module,
+            "awaitingApproval": run.awaiting_approval,
+            "awaitingModule": run.awaiting_module,
         }
 
     def _event_to_payload(self, session: Session, row: EventTable) -> dict:
@@ -261,7 +285,7 @@ class DatabaseStore:
         return snapshots
 
     async def list_topics(self) -> list[dict]:
-        with Session(ENGINE) as session:
+        with SessionLocal() as session:
             topics = session.exec(select(TopicTable).order_by(TopicTable.created_at)).all()
             items: list[dict] = []
             for topic in topics:
@@ -276,7 +300,7 @@ class DatabaseStore:
             return items
 
     async def get_topic(self, topic_id: str) -> dict | None:
-        with Session(ENGINE) as session:
+        with SessionLocal() as session:
             topic = session.get(TopicTable, topic_id)
             if topic is None:
                 return None
@@ -309,7 +333,7 @@ class DatabaseStore:
         )
 
         async with self._lock:
-            with Session(ENGINE) as session:
+            with SessionLocal() as session:
                 session.add(topic)
                 session.commit()
                 session.refresh(topic)
@@ -323,15 +347,17 @@ class DatabaseStore:
         trigger: str,
         initiator: str,
         note: str | None,
+        prompt: str = "",
+        config: dict | None = None,
     ) -> dict:
-        del trigger, initiator, note  # Reserved for future use.
+        del trigger, initiator, note, prompt  # Reserved for future use.
 
         timestamp = now_ms()
         clock_part = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
         run_id = f"run-{clock_part}-{uuid4().hex[:4]}"
 
         async with self._lock:
-            with Session(ENGINE) as session:
+            with SessionLocal() as session:
                 topic = session.get(TopicTable, topic_id)
                 if topic is None:
                     raise KeyError(topic_id)
@@ -340,7 +366,12 @@ class DatabaseStore:
                     id=run_id,
                     topic_id=topic_id,
                     status="queued",
+                    created_at=timestamp,
                     started_at=timestamp,
+                    current_module=None,
+                    awaiting_approval=False,
+                    awaiting_module=None,
+                    config_json=config or {},
                 )
 
                 topic.updated_at = timestamp
@@ -355,23 +386,56 @@ class DatabaseStore:
             "status": "queued",
             "createdAt": timestamp,
             "startedAt": timestamp,
+            "config": config or {},
+            "currentModule": None,
+            "awaitingApproval": False,
+            "awaitingModule": None,
         }
 
-    async def update_run_status(self, topic_id: str, run_id: str, status: str) -> None:
+    async def get_run(self, run_id: str) -> dict | None:
+        with SessionLocal() as session:
+            run = session.get(RunTable, run_id)
+            if run is None:
+                return None
+            return self._run_to_payload(run)
+
+    async def update_run_runtime(
+        self,
+        run_id: str,
+        *,
+        topic_id: str | None = None,
+        status: str | None = None,
+        current_module: str | None | object = _UNSET,
+        awaiting_approval: bool | None = None,
+        awaiting_module: str | None | object = _UNSET,
+        touch_started_at: bool = False,
+        touch_ended_at: bool = False,
+    ) -> dict:
         timestamp = now_ms()
 
         async with self._lock:
-            with Session(ENGINE) as session:
-                topic = session.get(TopicTable, topic_id)
-                if topic is None:
+            with SessionLocal() as session:
+                run = session.get(RunTable, run_id)
+                if run is None:
+                    raise KeyError(run_id)
+                if topic_id is not None and run.topic_id != topic_id:
                     raise KeyError(topic_id)
 
-                run = session.get(RunTable, run_id)
-                if run is None or run.topic_id != topic_id:
-                    raise KeyError(run_id)
+                topic = session.get(TopicTable, run.topic_id)
+                if topic is None:
+                    raise KeyError(run.topic_id)
 
-                run.status = status
-                if status in {"completed", "failed", "stopped"}:
+                if status is not None:
+                    run.status = status
+                if current_module is not _UNSET:
+                    run.current_module = current_module
+                if awaiting_approval is not None:
+                    run.awaiting_approval = awaiting_approval
+                if awaiting_module is not _UNSET:
+                    run.awaiting_module = awaiting_module
+                if touch_started_at:
+                    run.started_at = timestamp
+                if touch_ended_at or (status in RUN_TERMINAL_STATUSES if status is not None else False):
                     run.ended_at = timestamp
 
                 topic.updated_at = timestamp
@@ -379,6 +443,16 @@ class DatabaseStore:
                 session.add(run)
                 session.add(topic)
                 session.commit()
+                session.refresh(run)
+
+                return self._run_to_payload(run)
+
+    async def update_run_status(self, topic_id: str, run_id: str, status: str) -> None:
+        await self.update_run_runtime(
+            run_id,
+            topic_id=topic_id,
+            status=status,
+        )
 
     async def set_agent_status(
         self,
@@ -415,7 +489,7 @@ class DatabaseStore:
         )
 
         async with self._lock:
-            with Session(ENGINE) as session:
+            with SessionLocal() as session:
                 topic = session.get(TopicTable, event.topicId)
                 if topic is None:
                     raise KeyError(event.topicId)
@@ -429,6 +503,7 @@ class DatabaseStore:
                         kind=event.kind.value,
                         severity=event.severity.value,
                         ts=event.ts,
+                        created_at=event.ts,
                         summary=event.summary,
                         payload_json=payload_json,
                         artifacts_json=artifacts_json,
@@ -468,7 +543,7 @@ class DatabaseStore:
         file_path.write_text(file_content, encoding="utf-8")
 
         async with self._lock:
-            with Session(ENGINE) as session:
+            with SessionLocal() as session:
                 topic = session.get(TopicTable, topic_id)
                 if topic is None:
                     raise KeyError(topic_id)
@@ -497,7 +572,7 @@ class DatabaseStore:
         )
 
     async def get_snapshot(self, topic_id: str, *, limit: int = 50) -> dict:
-        with Session(ENGINE) as session:
+        with SessionLocal() as session:
             topic = session.get(TopicTable, topic_id)
             if topic is None:
                 raise KeyError(topic_id)
@@ -540,7 +615,7 @@ class DatabaseStore:
     ) -> dict:
         safe_name = Path(name).name
 
-        with Session(ENGINE) as session:
+        with SessionLocal() as session:
             statement = select(ArtifactTable).where(ArtifactTable.topic_id == topic_id)
             if artifact_id:
                 statement = statement.where(ArtifactTable.artifact_id == artifact_id)
@@ -565,7 +640,7 @@ class DatabaseStore:
 
     async def delete_topic(self, topic_id: str) -> None:
         async with self._lock:
-            with Session(ENGINE) as session:
+            with SessionLocal() as session:
                 topic = session.get(TopicTable, topic_id)
                 if topic is None:
                     raise KeyError(topic_id)
@@ -586,7 +661,7 @@ class DatabaseStore:
         if topic is None:
             raise KeyError(topic_id)
 
-        with Session(ENGINE) as session:
+        with SessionLocal() as session:
             rows = session.exec(
                 select(MessageTable)
                 .where(
@@ -626,7 +701,7 @@ class DatabaseStore:
         timestamp = now_ms()
 
         async with self._lock:
-            with Session(ENGINE) as session:
+            with SessionLocal() as session:
                 session.add(
                     MessageTable(
                         message_id=message_id,
@@ -651,7 +726,7 @@ class DatabaseStore:
         }
 
     async def get_trace(self, topic_id: str, *, run_id: str | None = None) -> dict:
-        with Session(ENGINE) as session:
+        with SessionLocal() as session:
             topic = session.get(TopicTable, topic_id)
             if topic is None:
                 raise KeyError(topic_id)
@@ -806,6 +881,26 @@ class DatabaseStore:
                 timeline_items.append(
                     {
                         "id": f"subtasks-{row.event_id}",
+                        "ts": row.ts,
+                        "agentId": row.agent_id,
+                        "kind": TraceItemKind.event.value,
+                        "summary": row.summary,
+                        "payload": payload or None,
+                    }
+                )
+                continue
+
+            if row.kind in {
+                EventKind.module_started.value,
+                EventKind.module_finished.value,
+                EventKind.module_skipped.value,
+                EventKind.module_failed.value,
+                EventKind.approval_required.value,
+                EventKind.approval_resolved.value,
+            }:
+                timeline_items.append(
+                    {
+                        "id": f"event-{row.event_id}",
                         "ts": row.ts,
                         "agentId": row.agent_id,
                         "kind": TraceItemKind.event.value,

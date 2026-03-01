@@ -30,8 +30,11 @@ backend/dist/
 frontend/vite.config.js
 frontend/vite.config.d.ts
 backend/data.db
+backend/data.db.*
 backend/data/
 data.db
+*.sqlite
+*.sqlite3
 
 # Coverage
 coverage/

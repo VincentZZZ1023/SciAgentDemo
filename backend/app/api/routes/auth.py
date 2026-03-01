@@ -1,7 +1,7 @@
-﻿from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.config import get_settings
-from app.core.security import authenticate_user, create_access_token, get_current_user
+from app.core.security import authenticate_user, create_access_token, get_current_user_claims
 from app.models.schemas import AuthMeResponse, LoginRequest, LoginResponse
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -18,10 +18,16 @@ async def login(payload: LoginRequest) -> LoginResponse:
 
     settings = get_settings()
     expires_in = settings.access_token_expire_minutes * 60
-    token = create_access_token(subject=user["username"])
-    return LoginResponse(access_token=token, token_type="bearer", expires_in=expires_in)
+    token = create_access_token(subject=user["username"], role=user["role"])
+    return LoginResponse(
+        access_token=token,
+        token_type="bearer",
+        expires_in=expires_in,
+        role=user["role"],
+    )
 
 
 @router.get("/me", response_model=AuthMeResponse)
-async def me(current_user: str = Depends(get_current_user)) -> AuthMeResponse:
-    return AuthMeResponse(username=current_user)
+async def me(current_user: dict[str, str] = Depends(get_current_user_claims)) -> AuthMeResponse:
+    return AuthMeResponse(username=current_user["username"], role=current_user["role"])
+
