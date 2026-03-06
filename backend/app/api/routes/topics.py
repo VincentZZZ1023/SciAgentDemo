@@ -8,6 +8,7 @@ from app.models.schemas import (
     AgentSnapshot,
     ArtifactRef,
     Event,
+    SnapshotActiveRun,
     SnapshotResponse,
     TopicCreateRequest,
     TopicDetail,
@@ -87,4 +88,5 @@ async def get_snapshot(
         agents=[AgentSnapshot(**item) for item in snapshot["agents"]],
         events=[Event(**item) for item in snapshot["events"]],
         artifacts=[ArtifactRef(**item) for item in snapshot["artifacts"]],
+        activeRun=SnapshotActiveRun(**snapshot["activeRun"]) if snapshot.get("activeRun") else None,
     )

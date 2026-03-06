@@ -4,7 +4,7 @@ import { createTopic, getTopics } from "../api/client";
 
 const APP_CARDS = [
   { id: "workflow", title: "Workflow", subtitle: "Multi-agent research loop", tag: "Ready", action: "open" },
-  { id: "ai-feeds", title: "AI Feeds", subtitle: "Research feed stream", tag: "Soon", action: "soon" },
+  { id: "insights", title: "Insights", subtitle: "Research feed stream", tag: "Soon", action: "soon" },
   { id: "reader", title: "Paper Reader", subtitle: "Read and annotate literature", tag: "Soon", action: "soon" },
   { id: "experiment", title: "Experiment Lab", subtitle: "Evaluate and compare runs", tag: "Soon", action: "soon" },
 ] as const;

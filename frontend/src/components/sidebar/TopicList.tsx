@@ -1,8 +1,11 @@
 import { FormEvent, MouseEvent, useMemo, useState } from "react";
 import { getBackendBaseUrl } from "../../api/client";
+import type { AuthUser } from "../../auth/AuthContext";
 import type { TopicSummary } from "../../types/events";
 
 interface TopicListProps {
+  user: AuthUser | null;
+  isAdmin: boolean;
   topics: TopicSummary[];
   currentTopicId?: string;
   loading: boolean;
@@ -11,6 +14,8 @@ interface TopicListProps {
   onCreate: (name: string, description: string) => Promise<void>;
   onDelete: (topicId: string) => Promise<void>;
   onRefresh: () => Promise<TopicSummary[]>;
+  onSwitchAccount: () => void;
+  onLogout: () => void;
 }
 
 const getErrorMessage = (error: unknown): string => {
@@ -36,6 +41,8 @@ const formatTopicTime = (timestamp?: number): string => {
 };
 
 export const TopicList = ({
+  user,
+  isAdmin,
   topics,
   currentTopicId,
   loading,
@@ -44,6 +51,8 @@ export const TopicList = ({
   onCreate,
   onDelete,
   onRefresh,
+  onSwitchAccount,
+  onLogout,
 }: TopicListProps) => {
   const [search, setSearch] = useState("");
   const [name, setName] = useState("");
@@ -216,6 +225,19 @@ export const TopicList = ({
           {creating ? "Creating..." : "Create Topic"}
         </button>
       </form>
+
+      <div className="topic-account-card">
+        <div className="topic-account-meta">
+          <strong>{user?.username ?? "guest"}</strong>
+          <span>{isAdmin ? "admin" : "user"}</span>
+        </div>
+        <button type="button" onClick={onSwitchAccount}>
+          Switch account
+        </button>
+        <button type="button" className="danger-button" onClick={onLogout}>
+          Logout
+        </button>
+      </div>
     </div>
   );
 };

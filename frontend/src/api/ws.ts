@@ -1,37 +1,57 @@
-﻿import { getAccessToken, getBackendBaseUrl } from "./client";
+import { getAccessToken, getBackendBaseUrl } from "./client";
 import { parseWsEvent, type Event } from "../types/events";
 
 export type WsStatus = "connecting" | "connected" | "reconnecting" | "closed";
 
-interface TopicWsOptions {
-  topicId: string;
+interface WsCallbacks {
   onEvent: (event: Event) => void;
   onStatusChange?: (status: WsStatus) => void;
   onError?: (message: string) => void;
 }
 
+interface TopicWsOptions extends WsCallbacks {
+  topicId: string;
+}
+
+interface AdminWsOptions extends WsCallbacks {}
+
 export interface TopicWsConnection {
   close: () => void;
 }
 
-const buildWsUrl = (topicId: string, token: string): string => {
+const buildWsBase = (): URL => {
   const url = new URL(getBackendBaseUrl());
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = "/api/ws";
   url.search = "";
+  return url;
+};
+
+const buildTopicWsUrl = (topicId: string, token: string): string => {
+  const url = buildWsBase();
+  url.pathname = "/api/ws";
   url.searchParams.set("topicId", topicId);
   url.searchParams.set("token", token);
   return url.toString();
 };
 
-export const connectTopicWs = (options: TopicWsOptions): TopicWsConnection => {
+const buildAdminWsUrl = (token: string): string => {
+  const url = buildWsBase();
+  url.pathname = "/api/admin/ws";
+  url.searchParams.set("token", token);
+  return url.toString();
+};
+
+const connectWithAutoReconnect = (
+  urlBuilder: (token: string) => string,
+  callbacks: WsCallbacks,
+): TopicWsConnection => {
   const token = getAccessToken();
   if (!token) {
-    options.onStatusChange?.("closed");
-    options.onError?.("Missing access token");
+    callbacks.onStatusChange?.("closed");
+    callbacks.onError?.("Missing access token");
     return {
       close: () => {
-        options.onStatusChange?.("closed");
+        callbacks.onStatusChange?.("closed");
       },
     };
   }
@@ -48,7 +68,7 @@ export const connectTopicWs = (options: TopicWsOptions): TopicWsConnection => {
 
     const delay = Math.min(1000 * 2 ** reconnectAttempts, 5000);
     reconnectAttempts += 1;
-    options.onStatusChange?.("reconnecting");
+    callbacks.onStatusChange?.("reconnecting");
 
     reconnectTimer = window.setTimeout(() => {
       connect();
@@ -60,13 +80,13 @@ export const connectTopicWs = (options: TopicWsOptions): TopicWsConnection => {
       return;
     }
 
-    options.onStatusChange?.(reconnectAttempts > 0 ? "reconnecting" : "connecting");
+    callbacks.onStatusChange?.(reconnectAttempts > 0 ? "reconnecting" : "connecting");
 
-    socket = new WebSocket(buildWsUrl(options.topicId, token));
+    socket = new WebSocket(urlBuilder(token));
 
     socket.onopen = () => {
       reconnectAttempts = 0;
-      options.onStatusChange?.("connected");
+      callbacks.onStatusChange?.("connected");
     };
 
     socket.onmessage = (message) => {
@@ -78,22 +98,22 @@ export const connectTopicWs = (options: TopicWsOptions): TopicWsConnection => {
         const raw = JSON.parse(message.data) as unknown;
         const event = parseWsEvent(raw);
         if (!event) {
-          options.onError?.("Ignored WS message: schema mismatch");
+          callbacks.onError?.("Ignored WS message: schema mismatch");
           return;
         }
-        options.onEvent(event);
+        callbacks.onEvent(event);
       } catch {
-        options.onError?.("Ignored WS message: invalid JSON");
+        callbacks.onError?.("Ignored WS message: invalid JSON");
       }
     };
 
     socket.onerror = () => {
-      options.onError?.("WebSocket error");
+      callbacks.onError?.("WebSocket error");
     };
 
     socket.onclose = () => {
       if (stopped) {
-        options.onStatusChange?.("closed");
+        callbacks.onStatusChange?.("closed");
         return;
       }
 
@@ -112,7 +132,19 @@ export const connectTopicWs = (options: TopicWsOptions): TopicWsConnection => {
       if (socket && socket.readyState <= WebSocket.OPEN) {
         socket.close();
       }
-      options.onStatusChange?.("closed");
+      callbacks.onStatusChange?.("closed");
     },
   };
 };
+
+export const connectTopicWs = (options: TopicWsOptions): TopicWsConnection => {
+  return connectWithAutoReconnect(
+    (token) => buildTopicWsUrl(options.topicId, token),
+    options,
+  );
+};
+
+export const connectAdminWs = (options: AdminWsOptions): TopicWsConnection => {
+  return connectWithAutoReconnect(buildAdminWsUrl, options);
+};
+

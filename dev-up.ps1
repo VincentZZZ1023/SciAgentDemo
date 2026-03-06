@@ -2,6 +2,7 @@
 param(
   [switch]$InstallDeps,
   [switch]$OpenBrowser,
+  [switch]$NoBrowser,
   [switch]$DryRun,
   [switch]$Stop,
   [switch]$Status,
@@ -9,6 +10,9 @@ param(
   [switch]$OneClick,
   [switch]$Quick,
   [switch]$Test,
+  [switch]$OpenAppCenter,
+  [switch]$OpenAdmin,
+  [switch]$OpenClassic,
   [switch]$NoRestart,
   [switch]$ForceCleanPorts,
   [switch]$RequireDeepSeek,
@@ -19,6 +23,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+# Prevent stderr-only native output (e.g. Alembic INFO logs) from being treated
+# as terminating errors in PowerShell 7+.
+if (Get-Variable -Name "PSNativeCommandUseErrorActionPreference" -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BackendDir = Join-Path $RepoRoot "backend"
@@ -26,6 +35,8 @@ $FrontendDir = Join-Path $RepoRoot "frontend"
 $ComposeFile = Join-Path $RepoRoot "docker-compose.yml"
 $StateDir = Join-Path $RepoRoot ".dev"
 $PidFile = Join-Path $StateDir "dev-up.pids.json"
+$RootEnvFile = Join-Path $RepoRoot ".env"
+$RootEnvExample = Join-Path $RepoRoot ".env.example"
 $BackendPort = 8000
 $FrontendPort = 5173
 $PostgresPort = 5432
@@ -37,7 +48,15 @@ if ($AutoOneClick) {
 
 $EffectiveRestart = $Restart -or $Quick -or $OneClick -or $Test -or (-not $NoRestart)
 $EffectiveForceCleanPorts = $ForceCleanPorts -or $Quick -or $OneClick -or $Test
-$EffectiveOpenBrowser = $OpenBrowser -or $Quick -or $OneClick -or $Test
+$EffectiveOpenBrowser = ($OpenBrowser -or $Quick -or $OneClick -or $Test) -and (-not $NoBrowser)
+$EffectiveOpenAdmin = $OpenAdmin
+$EffectiveOpenClassic = $OpenClassic
+$EffectiveOpenAppCenter = $OpenAppCenter -or (($OneClick -or $Quick) -and (-not $OpenClassic) -and (-not $OpenAdmin))
+
+if (-not (Test-Path $RootEnvFile) -and (Test-Path $RootEnvExample)) {
+  Copy-Item -Path $RootEnvExample -Destination $RootEnvFile -Force
+  Write-Host "[dev-up] .env not found. Bootstrapped from .env.example." -ForegroundColor Yellow
+}
 $ConfiguredDatabaseUrl = $null
 foreach ($candidate in @((Join-Path $RepoRoot ".env"), (Join-Path $BackendDir ".env"))) {
   if (-not (Test-Path $candidate)) {
@@ -79,6 +98,7 @@ $UsingPostgres = $ConfiguredDatabaseUrl.ToLowerInvariant().StartsWith("postgresq
 $EffectiveAutoMigrate = (-not $SkipMigrate)
 $EffectiveDockerBootstrap = (-not $SkipDocker) -and ($OneClick -or $Quick -or $Test) -and $UsingPostgres
 $AutoRestart = $EffectiveRestart -and (-not $DryRun)
+$AllowReuseExisting = (-not $AutoRestart)
 
 if (-not $Stop -and -not $Status -and -not $UsingPostgres) {
   throw "SQLite is no longer supported for runtime. Set DATABASE_URL to PostgreSQL in .env before starting."
@@ -97,6 +117,18 @@ if (-not $Stop -and -not $Status) {
     Write-Host "[dev-up] Test mode enabled: quick API smoke + auto topic/run + open browser to run panel." -ForegroundColor Cyan
   }
 
+  if (-not $Test -and $EffectiveOpenBrowser) {
+    if ($EffectiveOpenAdmin) {
+      Write-Host "[dev-up] Browser target: admin dashboard (/admin)." -ForegroundColor Cyan
+    }
+    elseif ($EffectiveOpenClassic) {
+      Write-Host "[dev-up] Browser target: classic workflow (/app)." -ForegroundColor Cyan
+    }
+    elseif ($EffectiveOpenAppCenter) {
+      Write-Host "[dev-up] Browser target: app center (/app-center)." -ForegroundColor Cyan
+    }
+  }
+
   if ($EffectiveAutoMigrate) {
     if ($EffectiveDockerBootstrap) {
       Write-Host "[dev-up] DB bootstrap enabled: docker postgres + alembic migrate." -ForegroundColor Cyan
@@ -108,6 +140,10 @@ if (-not $Stop -and -not $Status) {
       Write-Host "[dev-up] DB migrate enabled: alembic upgrade head." -ForegroundColor Cyan
     }
   }
+
+  if (-not $AllowReuseExisting) {
+    Write-Host "[dev-up] Restart mode: existing services will not be reused." -ForegroundColor Cyan
+  }
 }
 
 function Require-Command {
@@ -117,16 +153,49 @@ function Require-Command {
   }
 }
 
+function Get-NpmCommand {
+  $npmCmd = Get-Command "npm.cmd" -ErrorAction SilentlyContinue
+  if ($null -ne $npmCmd -and -not [string]::IsNullOrWhiteSpace($npmCmd.Source)) {
+    return [string]$npmCmd.Source
+  }
+
+  $npm = Get-Command "npm" -ErrorAction SilentlyContinue
+  if ($null -ne $npm -and -not [string]::IsNullOrWhiteSpace($npm.Source)) {
+    return [string]$npm.Source
+  }
+
+  throw "Missing command 'npm'. Please install Node.js and retry."
+}
+
 function Test-PythonModule {
-  param([string]$ModuleName)
+  param(
+    [string]$ModuleName,
+    [string]$PythonCommand = "python"
+  )
 
   try {
-    & python -c "import $ModuleName" *> $null
+    & $PythonCommand -c "import $ModuleName" *> $null
     return ($LASTEXITCODE -eq 0)
   }
   catch {
     return $false
   }
+}
+
+function Get-MissingPythonModules {
+  param(
+    [string[]]$ModuleNames,
+    [string]$PythonCommand = "python"
+  )
+
+  $missing = @()
+  foreach ($moduleName in $ModuleNames) {
+    if (-not (Test-PythonModule -ModuleName $moduleName -PythonCommand $PythonCommand)) {
+      $missing += $moduleName
+    }
+  }
+
+  return $missing
 }
 
 function Get-EnvValueFromFile {
@@ -178,6 +247,33 @@ function Resolve-DeepSeekApiKey {
   }
 
   return $null
+}
+
+function Resolve-EnvValue {
+  param(
+    [string]$Name,
+    [string]$DefaultValue = ""
+  )
+
+  $processValue = [Environment]::GetEnvironmentVariable($Name)
+  if (-not [string]::IsNullOrWhiteSpace($processValue)) {
+    return [string]$processValue
+  }
+
+  $rootEnv = Join-Path $RepoRoot ".env"
+  $backendEnv = Join-Path $BackendDir ".env"
+
+  $rootValue = Get-EnvValueFromFile -Path $rootEnv -Name $Name
+  if (-not [string]::IsNullOrWhiteSpace($rootValue)) {
+    return $rootValue
+  }
+
+  $backendValue = Get-EnvValueFromFile -Path $backendEnv -Name $Name
+  if (-not [string]::IsNullOrWhiteSpace($backendValue)) {
+    return $backendValue
+  }
+
+  return $DefaultValue
 }
 
 function Resolve-DatabaseUrl {
@@ -248,6 +344,50 @@ function Invoke-ComposeCommand {
   throw "No docker compose runner available."
 }
 
+function Invoke-ExternalProcessCapture {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$FilePath,
+    [string[]]$Arguments = @(),
+    [string]$WorkingDirectory = ""
+  )
+
+  $stdoutPath = [System.IO.Path]::GetTempFileName()
+  $stderrPath = [System.IO.Path]::GetTempFileName()
+
+  try {
+    $startParams = @{
+      FilePath = $FilePath
+      ArgumentList = $Arguments
+      Wait = $true
+      PassThru = $true
+      NoNewWindow = $true
+      RedirectStandardOutput = $stdoutPath
+      RedirectStandardError = $stderrPath
+      ErrorAction = "Stop"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+      $startParams["WorkingDirectory"] = $WorkingDirectory
+    }
+
+    $process = Start-Process @startParams
+    $stdoutLines = @(Get-Content -Path $stdoutPath -ErrorAction SilentlyContinue)
+    $stderrLines = @(Get-Content -Path $stderrPath -ErrorAction SilentlyContinue)
+
+    return @{
+      ExitCode = [int]$process.ExitCode
+      StdOut = $stdoutLines
+      StdErr = $stderrLines
+      Output = @($stdoutLines + $stderrLines)
+    }
+  }
+  finally {
+    Remove-Item -Path $stdoutPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path $stderrPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Wait-TcpPort {
   param(
     [string]$HostName,
@@ -280,10 +420,114 @@ function Wait-TcpPort {
   return $false
 }
 
+function Test-DockerEngineReady {
+  if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    return $false
+  }
+
+  $oldEap = $ErrorActionPreference
+  $nativePrefVar = Get-Variable -Name "PSNativeCommandUseErrorActionPreference" -Scope Global -ErrorAction SilentlyContinue
+  $hasNativePref = ($null -ne $nativePrefVar)
+  $oldNativePref = $false
+  if ($hasNativePref) {
+    $oldNativePref = [bool]$nativePrefVar.Value
+  }
+
+  try {
+    $ErrorActionPreference = "Continue"
+    if ($hasNativePref) {
+      Set-Variable -Name "PSNativeCommandUseErrorActionPreference" -Scope Global -Value $false
+    }
+    & docker info *> $null
+    return ($LASTEXITCODE -eq 0)
+  }
+  catch {
+    return $false
+  }
+  finally {
+    if ($hasNativePref) {
+      Set-Variable -Name "PSNativeCommandUseErrorActionPreference" -Scope Global -Value $oldNativePref
+    }
+    $ErrorActionPreference = $oldEap
+  }
+}
+
+function Get-DockerDesktopExecutable {
+  $candidates = @(
+    (Join-Path ${env:ProgramFiles} "Docker\Docker\Docker Desktop.exe"),
+    (Join-Path ${env:ProgramW6432} "Docker\Docker\Docker Desktop.exe"),
+    (Join-Path ${env:LocalAppData} "Programs\Docker\Docker\Docker Desktop.exe")
+  )
+
+  foreach ($candidate in $candidates) {
+    if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path $candidate)) {
+      return $candidate
+    }
+  }
+
+  return $null
+}
+
+function Ensure-DockerEngineReady {
+  param(
+    [int]$TimeoutSec = 90
+  )
+
+  if (Test-DockerEngineReady) {
+    return $true
+  }
+
+  $desktopExe = Get-DockerDesktopExecutable
+  if ([string]::IsNullOrWhiteSpace($desktopExe)) {
+    return $false
+  }
+
+  Write-Host "[dev-up] Docker daemon is not ready. Launching Docker Desktop..." -ForegroundColor Yellow
+  try {
+    Start-Process -FilePath $desktopExe | Out-Null
+  }
+  catch {
+    return $false
+  }
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSec)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-DockerEngineReady) {
+      Write-Host "[dev-up] Docker engine is ready." -ForegroundColor Green
+      return $true
+    }
+    Start-Sleep -Seconds 2
+  }
+
+  return $false
+}
+
 function Start-PostgresIfNeeded {
   $dbUrl = Resolve-DatabaseUrl
   if (-not $dbUrl.ToLowerInvariant().StartsWith("postgresql")) {
     Write-Host "[dev-up] DATABASE_URL is not PostgreSQL. Skip docker postgres bootstrap." -ForegroundColor DarkYellow
+    return
+  }
+
+  # Only bootstrap local PostgreSQL via Docker when DATABASE_URL points to localhost.
+  $dbHost = ""
+  try {
+    $normalizedDbUrl = $dbUrl -replace "^postgresql(\+[^:]+)?://", "postgres://"
+    $dbUri = [System.Uri]$normalizedDbUrl
+    $dbHost = $dbUri.Host
+  }
+  catch {
+    $dbHost = ""
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($dbHost) -and $dbHost -notin @("localhost", "127.0.0.1")) {
+    Write-Host "[dev-up] DATABASE_URL host is '$dbHost'. Skip local docker postgres bootstrap." -ForegroundColor DarkYellow
+    return
+  }
+
+  # Local PostgreSQL already available, no need to bootstrap with Docker.
+  if (Wait-TcpPort -HostName "127.0.0.1" -Port $PostgresPort -TimeoutSec 2) {
+    Write-Host "[dev-up] PostgreSQL is already reachable on localhost:$PostgresPort. Skip docker bootstrap." -ForegroundColor Green
     return
   }
 
@@ -298,16 +542,60 @@ function Start-PostgresIfNeeded {
     return
   }
 
+  if (-not (Ensure-DockerEngineReady -TimeoutSec 90)) {
+    if (Wait-TcpPort -HostName "127.0.0.1" -Port $PostgresPort -TimeoutSec 2) {
+      Write-Warning "[dev-up] Docker engine not ready, but PostgreSQL became reachable on localhost:$PostgresPort. Continuing..."
+      return
+    }
+
+    throw @"
+Docker engine is not ready, and PostgreSQL is not reachable on localhost:$PostgresPort.
+Fix options:
+  1) Start Docker Desktop manually, then rerun: .\dev-up.ps1
+  2) If you already run PostgreSQL externally, rerun with: .\dev-up.ps1 -SkipDocker
+  3) Verify DATABASE_URL in .env points to a reachable PostgreSQL instance.
+"@
+  }
+
   Write-Host "[dev-up] Starting PostgreSQL via Docker Compose..." -ForegroundColor Cyan
+  $composeExitCode = 0
+  $composeOutput = @()
   Push-Location $RepoRoot
   try {
-    Invoke-ComposeCommand -Runner $runner -ComposeArgs @("up", "-d", "postgres")
-    if ($LASTEXITCODE -ne 0) {
-      throw "docker compose up -d postgres failed."
+    if ($runner -eq "docker-compose-v2") {
+      $composeResult = Invoke-ExternalProcessCapture -FilePath "docker" -Arguments @("compose", "up", "-d", "postgres") -WorkingDirectory $RepoRoot
     }
+    elseif ($runner -eq "docker-compose-v1") {
+      $composeResult = Invoke-ExternalProcessCapture -FilePath "docker-compose" -Arguments @("up", "-d", "postgres") -WorkingDirectory $RepoRoot
+    }
+    else {
+      throw "No docker compose runner available."
+    }
+
+    $composeOutput = @($composeResult.Output)
+    $composeExitCode = [int]$composeResult.ExitCode
   }
   finally {
     Pop-Location
+  }
+
+  if ($composeOutput.Count -gt 0) {
+    $composeOutput | ForEach-Object { Write-Host $_ }
+  }
+
+  if ($composeExitCode -ne 0) {
+    if (Wait-TcpPort -HostName "127.0.0.1" -Port $PostgresPort -TimeoutSec 2) {
+      Write-Warning "[dev-up] docker compose failed, but PostgreSQL is already reachable on localhost:$PostgresPort. Continuing..."
+      return
+    }
+
+    throw @"
+docker compose up -d postgres failed and PostgreSQL is not reachable on localhost:$PostgresPort.
+Fix options:
+  1) Start Docker Desktop, then rerun: .\dev-up.ps1
+  2) If you already run PostgreSQL externally, rerun with: .\dev-up.ps1 -SkipDocker
+  3) Verify DATABASE_URL in .env points to a reachable PostgreSQL instance.
+"@
   }
 
   if (Wait-TcpPort -HostName "127.0.0.1" -Port $PostgresPort -TimeoutSec 25) {
@@ -324,46 +612,45 @@ function Run-AlembicUpgrade {
   $env:DATABASE_URL = $dbUrl
 
   Write-Host "[dev-up] Running Alembic migrations (upgrade head)..." -ForegroundColor Cyan
-  Push-Location $BackendDir
-  try {
-    $upgradeOutput = & $pythonCmd -m alembic upgrade head 2>&1
-    $upgradeExitCode = $LASTEXITCODE
-    if ($null -ne $upgradeOutput) {
-      $upgradeOutput | ForEach-Object { Write-Host $_ }
-    }
-    if ($upgradeExitCode -ne 0) {
-      $upgradeText = ""
-      if ($null -ne $upgradeOutput) {
-        $upgradeText = ($upgradeOutput | Out-String)
-      }
-      $looksLikeDuplicateSchema = (
-        $upgradeText -match "already exists" -or
-        $upgradeText -match "DuplicateTable"
-      )
-
-      if ($looksLikeDuplicateSchema) {
-        Write-Warning "[dev-up] Alembic detected existing schema without version state. Attempting 'alembic stamp head' repair..."
-        & $pythonCmd -m alembic stamp head
-        if ($LASTEXITCODE -ne 0) {
-          throw "alembic stamp head failed during automatic repair."
-        }
-
-        $retryOutput = & $pythonCmd -m alembic upgrade head 2>&1
-        $retryExitCode = $LASTEXITCODE
-        if ($null -ne $retryOutput) {
-          $retryOutput | ForEach-Object { Write-Host $_ }
-        }
-        if ($retryExitCode -ne 0) {
-          throw "alembic upgrade head failed after automatic repair."
-        }
-      }
-      else {
-        throw "alembic upgrade head failed."
-      }
-    }
+  $upgradeResult = Invoke-ExternalProcessCapture -FilePath $pythonCmd -Arguments @("-m", "alembic", "upgrade", "head") -WorkingDirectory $BackendDir
+  $upgradeOutput = @($upgradeResult.Output)
+  $upgradeExitCode = [int]$upgradeResult.ExitCode
+  if ($null -ne $upgradeOutput) {
+    $upgradeOutput | ForEach-Object { Write-Host $_ }
   }
-  finally {
-    Pop-Location
+  if ($upgradeExitCode -ne 0) {
+    $upgradeText = ""
+    if ($null -ne $upgradeOutput) {
+      $upgradeText = ($upgradeOutput | Out-String)
+    }
+    $looksLikeDuplicateSchema = (
+      $upgradeText -match "already exists" -or
+      $upgradeText -match "DuplicateTable"
+    )
+
+    if ($looksLikeDuplicateSchema) {
+      Write-Warning "[dev-up] Alembic detected existing schema without version state. Attempting 'alembic stamp head' repair..."
+      $stampResult = Invoke-ExternalProcessCapture -FilePath $pythonCmd -Arguments @("-m", "alembic", "stamp", "head") -WorkingDirectory $BackendDir
+      if ($null -ne $stampResult.Output) {
+        @($stampResult.Output) | ForEach-Object { Write-Host $_ }
+      }
+      if ([int]$stampResult.ExitCode -ne 0) {
+        throw "alembic stamp head failed during automatic repair."
+      }
+
+      $retryResult = Invoke-ExternalProcessCapture -FilePath $pythonCmd -Arguments @("-m", "alembic", "upgrade", "head") -WorkingDirectory $BackendDir
+      $retryOutput = @($retryResult.Output)
+      $retryExitCode = [int]$retryResult.ExitCode
+      if ($null -ne $retryOutput) {
+        $retryOutput | ForEach-Object { Write-Host $_ }
+      }
+      if ($retryExitCode -ne 0) {
+        throw "alembic upgrade head failed after automatic repair."
+      }
+    }
+    else {
+      throw "alembic upgrade head failed."
+    }
   }
 }
 
@@ -617,6 +904,22 @@ function Stop-PortOwnersIfLikely {
   }
 }
 
+function Get-TrackedPortOwnerPid {
+  param(
+    [int]$Port
+  )
+
+  $owners = @(Get-PortOwnerPids -Port $Port)
+  foreach ($ownerPid in $owners) {
+    $pidInt = [int]$ownerPid
+    if ((Is-ProcessAlive -ProcessId $pidInt) -and (Is-LikelySciAgentPortOwner -Port $Port -ProcessId $pidInt)) {
+      return $pidInt
+    }
+  }
+
+  return 0
+}
+
 function Ensure-PortAvailable {
   param(
     [int]$Port,
@@ -811,19 +1114,27 @@ function Invoke-JsonRequest {
 function Invoke-QuickUiTest {
   param(
     [string]$BackendBaseUrl,
-    [string]$FrontendBaseUrl
+    [string]$FrontendBaseUrl,
+    [string]$DemoUsername = "demo",
+    [string]$DemoPassword = "demo"
   )
 
   Write-Host "[dev-up] Running quick API smoke..." -ForegroundColor Cyan
 
   $login = Invoke-JsonRequest -Method "POST" -Url "$BackendBaseUrl/api/auth/login" -Body @{
-    username = "demo"
-    password = "demo"
+    username = $DemoUsername
+    password = $DemoPassword
   }
 
-  $token = [string]$login.access_token
+  $token = ""
+  if ($null -ne $login -and $null -ne $login.access_token -and -not [string]::IsNullOrWhiteSpace([string]$login.access_token)) {
+    $token = [string]$login.access_token
+  }
+  elseif ($null -ne $login -and $null -ne $login.token -and -not [string]::IsNullOrWhiteSpace([string]$login.token)) {
+    $token = [string]$login.token
+  }
   if ([string]::IsNullOrWhiteSpace($token)) {
-    throw "Login failed in test mode: access_token is missing."
+    throw "Login failed in test mode: token/access_token is missing."
   }
 
   $authHeaders = @{
@@ -917,10 +1228,22 @@ if (-not (Test-Path $FrontendDir)) {
 }
 
 Require-Command -Name "powershell"
-Require-Command -Name "python"
 Require-Command -Name "npm"
+$NpmCmd = Get-NpmCommand
+$BackendPythonCmd = Get-BackendPythonCommand
+if ($BackendPythonCmd -eq "python") {
+  Require-Command -Name "python"
+}
+elseif (-not (Test-Path $BackendPythonCmd)) {
+  throw "Backend Python executable not found: $BackendPythonCmd"
+}
 
 $deepseekKey = Resolve-DeepSeekApiKey
+$DemoLoginUser = Resolve-EnvValue -Name "DEMO_EMAIL" -DefaultValue "demo"
+$DemoLoginPass = Resolve-EnvValue -Name "DEMO_PASSWORD" -DefaultValue "demo"
+$AdminLoginUser = Resolve-EnvValue -Name "ADMIN_EMAIL" -DefaultValue "admin"
+$AdminLoginPass = Resolve-EnvValue -Name "ADMIN_PASSWORD" -DefaultValue "admin"
+
 if ([string]::IsNullOrWhiteSpace($deepseekKey)) {
   if ($RequireDeepSeek) {
     throw "DEEPSEEK_API_KEY is missing. Set it in .env (repo root/backend) or environment variables."
@@ -952,6 +1275,11 @@ if (-not $DryRun) {
   elseif ($AutoRestart) {
     Stop-DevProcesses
   }
+
+  if ($AutoRestart) {
+    Stop-PortOwnersIfLikely -Port $BackendPort -Label "backend"
+    Stop-PortOwnersIfLikely -Port $FrontendPort -Label "frontend"
+  }
 }
 
 $backendRequirements = Join-Path $BackendDir "requirements.txt"
@@ -959,9 +1287,12 @@ $frontendNodeModules = Join-Path $FrontendDir "node_modules"
 
 $needBackendDeps = $InstallDeps
 $needFrontendDeps = $InstallDeps
+$requiredBackendModules = @("uvicorn", "alembic", "sqlmodel", "psycopg2", "bcrypt")
+$missingBackendModules = @()
 
 if (-not $InstallDeps) {
-  if (-not (Test-PythonModule -ModuleName "uvicorn")) {
+  $missingBackendModules = @(Get-MissingPythonModules -ModuleNames $requiredBackendModules -PythonCommand $BackendPythonCmd)
+  if ($missingBackendModules.Count -gt 0) {
     $needBackendDeps = $true
   }
   if (-not (Test-Path $frontendNodeModules)) {
@@ -970,12 +1301,26 @@ if (-not $InstallDeps) {
 
   if ($needBackendDeps -or $needFrontendDeps) {
     Write-Host "[dev-up] Missing dependencies detected. Auto-installing required packages..." -ForegroundColor Yellow
+    if ($missingBackendModules.Count -gt 0) {
+      Write-Host "[dev-up] Missing Python modules: $($missingBackendModules -join ', ')" -ForegroundColor DarkYellow
+    }
   }
+}
+
+if ($DryRun -and ($needBackendDeps -or $needFrontendDeps)) {
+  if ($needBackendDeps) {
+    Write-Host "[dry-run] Backend dependencies would be installed from: $backendRequirements" -ForegroundColor Yellow
+  }
+  if ($needFrontendDeps) {
+    Write-Host "[dry-run] Frontend dependencies would be installed via: $NpmCmd install" -ForegroundColor Yellow
+  }
+  $needBackendDeps = $false
+  $needFrontendDeps = $false
 }
 
 if ($needBackendDeps) {
   Write-Host "[setup] Installing backend dependencies..." -ForegroundColor Cyan
-  & python -m pip install -r $backendRequirements
+  & $BackendPythonCmd -m pip install -r $backendRequirements
   if ($LASTEXITCODE -ne 0) {
     throw "Backend dependency install failed."
   }
@@ -985,7 +1330,7 @@ if ($needFrontendDeps) {
   Write-Host "[setup] Installing frontend dependencies..." -ForegroundColor Cyan
   Push-Location $FrontendDir
   try {
-    & npm install
+    & $NpmCmd install
     if ($LASTEXITCODE -ne 0) {
       throw "Frontend dependency install failed."
     }
@@ -1006,7 +1351,7 @@ if (-not $DryRun) {
   if (Test-PortBindable -Port $BackendPort) {
     # Backend port is free, start a new backend process.
   }
-  elseif (Test-HttpReadyOnce -Url "http://127.0.0.1:$BackendPort/api/health" -TimeoutSec 2) {
+  elseif ($AllowReuseExisting -and (Test-HttpReadyOnce -Url "http://127.0.0.1:$BackendPort/api/health" -TimeoutSec 2)) {
     $ReuseBackend = $true
     Write-Host "[dev-up] Reusing existing backend on http://localhost:$BackendPort" -ForegroundColor DarkYellow
   }
@@ -1017,7 +1362,7 @@ if (-not $DryRun) {
   if (Test-PortBindable -Port $FrontendPort) {
     # Frontend port is free, start a new frontend process.
   }
-  elseif (Test-HttpReadyOnce -Url "http://127.0.0.1:$FrontendPort" -TimeoutSec 2) {
+  elseif ($AllowReuseExisting -and (Test-HttpReadyOnce -Url "http://127.0.0.1:$FrontendPort" -TimeoutSec 2)) {
     $ReuseFrontend = $true
     Write-Host "[dev-up] Reusing existing frontend on http://localhost:$FrontendPort" -ForegroundColor DarkYellow
   }
@@ -1035,7 +1380,6 @@ if (-not $DryRun -and $EffectiveAutoMigrate) {
   }
 }
 
-$BackendPythonCmd = Get-BackendPythonCommand
 $BackendPythonEscaped = $BackendPythonCmd.Replace("'", "''")
 $backendCommand = @"
 `$host.UI.RawUI.WindowTitle = 'SciAgentDemo Backend'
@@ -1046,7 +1390,7 @@ Set-Location -Path '$BackendDir'
 $frontendCommand = @"
 `$host.UI.RawUI.WindowTitle = 'SciAgentDemo Frontend'
 Set-Location -Path '$FrontendDir'
-npm run dev -- --host 0.0.0.0 --port $FrontendPort
+& '$($NpmCmd.Replace("'", "''"))' run dev -- --host 0.0.0.0 --port $FrontendPort
 "@
 
 if ($DryRun) {
@@ -1069,27 +1413,37 @@ $backendProc = $null
 $frontendProc = $null
 
 if (-not $ReuseBackend) {
-  $backendProc = Start-Process -FilePath "powershell" -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -PassThru
+  $backendProc = Start-Process -FilePath "powershell" -ArgumentList @("-NoProfile", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $backendCommand) -PassThru
   Start-Sleep -Milliseconds 500
 }
 
 if (-not $ReuseFrontend) {
-  $frontendProc = Start-Process -FilePath "powershell" -ArgumentList @("-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $frontendCommand) -PassThru
+  $frontendProc = Start-Process -FilePath "powershell" -ArgumentList @("-NoProfile", "-NoExit", "-ExecutionPolicy", "Bypass", "-Command", $frontendCommand) -PassThru
 }
 
-$backendPid = if ($null -ne $backendProc) { [int]$backendProc.Id } else { 0 }
-$frontendPid = if ($null -ne $frontendProc) { [int]$frontendProc.Id } else { 0 }
+$backendPid = if ($null -ne $backendProc) { [int]$backendProc.Id } elseif ($ReuseBackend) { Get-TrackedPortOwnerPid -Port $BackendPort } else { 0 }
+$frontendPid = if ($null -ne $frontendProc) { [int]$frontendProc.Id } elseif ($ReuseFrontend) { Get-TrackedPortOwnerPid -Port $FrontendPort } else { 0 }
 Save-Pids -BackendPid $backendPid -FrontendPid $frontendPid
 
 if ($backendPid -gt 0) {
-  Write-Host "[dev-up] Backend PID:  $backendPid" -ForegroundColor Green
+  if ($null -ne $backendProc) {
+    Write-Host "[dev-up] Backend PID:  $backendPid" -ForegroundColor Green
+  }
+  else {
+    Write-Host "[dev-up] Backend PID:  reused-existing ($backendPid)" -ForegroundColor Green
+  }
 }
 else {
   Write-Host "[dev-up] Backend PID:  reused-existing" -ForegroundColor Green
 }
 
 if ($frontendPid -gt 0) {
-  Write-Host "[dev-up] Frontend PID: $frontendPid" -ForegroundColor Green
+  if ($null -ne $frontendProc) {
+    Write-Host "[dev-up] Frontend PID: $frontendPid" -ForegroundColor Green
+  }
+  else {
+    Write-Host "[dev-up] Frontend PID: reused-existing ($frontendPid)" -ForegroundColor Green
+  }
 }
 else {
   Write-Host "[dev-up] Frontend PID: reused-existing" -ForegroundColor Green
@@ -1098,6 +1452,7 @@ else {
 Write-Host "[dev-up] Backend URL:  http://localhost:$BackendPort" -ForegroundColor Green
 Write-Host "[dev-up] Frontend URL: http://localhost:$FrontendPort" -ForegroundColor Green
 Write-Host "[dev-up] Stop command: .\dev-up.ps1 -Stop" -ForegroundColor Green
+Write-Host "[dev-up] Demo users: $DemoLoginUser/$DemoLoginPass , $AdminLoginUser/$AdminLoginPass" -ForegroundColor Green
 
 $watchPids = @()
 if ($backendPid -gt 0) {
@@ -1128,12 +1483,23 @@ else {
   Write-Warning "[dev-up] Services did not become ready in $ReadyTimeoutSec seconds. Check the opened terminals."
 }
 
-$BrowserUrl = "http://localhost:$FrontendPort"
+$BrowserUrl = if ($EffectiveOpenAdmin -and -not $Test) {
+  "http://localhost:$FrontendPort/admin"
+}
+elseif ($EffectiveOpenClassic -and -not $Test) {
+  "http://localhost:$FrontendPort/app"
+}
+elseif ($EffectiveOpenAppCenter -and -not $Test) {
+  "http://localhost:$FrontendPort/app-center"
+}
+else {
+  "http://localhost:$FrontendPort"
+}
 
 if ($Test) {
   if ($backendReady -and $frontendReady) {
     try {
-      $testResult = Invoke-QuickUiTest -BackendBaseUrl "http://127.0.0.1:$BackendPort" -FrontendBaseUrl "http://localhost:$FrontendPort"
+      $testResult = Invoke-QuickUiTest -BackendBaseUrl "http://127.0.0.1:$BackendPort" -FrontendBaseUrl "http://localhost:$FrontendPort" -DemoUsername $DemoLoginUser -DemoPassword $DemoLoginPass
       $topicId = [string]$testResult.topicId
       $runId = [string]$testResult.runId
       $BrowserUrl = [string]$testResult.launchUrl

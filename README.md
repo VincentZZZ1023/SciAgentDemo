@@ -70,6 +70,7 @@
 - 自动重启（先停旧进程，再启动）
 - 自动清理本项目残留的 `uvicorn/vite` 端口占用
 - 自动拉起 `docker compose` 的 `postgres`（若可用）
+- 若 Docker 引擎未就绪，脚本会尝试自动启动 Docker Desktop 并等待
 - 自动执行 `backend` 的 `alembic upgrade head`
 - 数据库运行时仅支持 PostgreSQL；若你有历史 `backend/data.db`，请使用 `backend/scripts/migrate_sqlite_to_postgres.py` 做一次性迁移
 - 若端口已被健康服务占用，会自动复用现有 backend/frontend，避免重复报错
@@ -82,6 +83,9 @@
 .\dev-up.ps1 -Test
 .\dev-up.ps1 -InstallDeps
 .\dev-up.ps1 -OpenBrowser
+.\dev-up.ps1 -NoBrowser
+.\dev-up.ps1 -OpenAppCenter
+.\dev-up.ps1 -OpenAdmin
 .\dev-up.ps1 -Stop
 .\dev-up.ps1 -Status
 .\dev-up.ps1 -NoRestart
@@ -96,6 +100,10 @@
 说明：
 
 - `-Quick` = `-Restart + -ForceCleanPorts + -OpenBrowser`，适合日常测试。
+- `-OneClick/-Quick` 默认打开 `http://localhost:5173/app-center`，方便直接查看首页 UI。
+- `-OpenAdmin`：启动后直接打开 `http://localhost:5173/admin`（管理员大屏）。
+- `-NoBrowser`：启动服务但不自动打开浏览器（覆盖 OneClick/Quick/Test 的默认打开行为）。
+- `-OpenAppCenter`：即使不是 OneClick/Quick，也可强制启动后打开 `/app-center`。
 - `-Test` = `-Quick` + 自动登录 demo + 自动确保 topic + 自动创建 run，并打开到 `/app/{topicId}?runId=...`。
 - `-SkipDocker`：不自动拉起 docker compose postgres（你自己管理数据库时用）。
 - `-SkipMigrate`：跳过自动 Alembic 迁移。

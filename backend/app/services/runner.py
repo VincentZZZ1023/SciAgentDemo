@@ -290,6 +290,7 @@ class FakePipelineRunner:
             current_module=module_runtime.module,
             awaiting_approval=True,
             awaiting_module=module_runtime.module,
+            approval_resolved_at=None,
         )
 
         payload: dict[str, Any] = {
@@ -1139,6 +1140,7 @@ class FakePipelineRunner:
                 current_module=None,
                 awaiting_approval=False,
                 awaiting_module=None,
+                approval_resolved_at=None,
                 touch_started_at=True,
             )
 

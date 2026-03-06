@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import {
   BrowserRouter,
   Navigate,
@@ -9,22 +9,23 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
-import {
-  getAccessToken,
-  setUnauthorizedHandler,
-  validateAccessToken,
-} from "../api/client";
-import { AppCenterPage } from "../pages/AppCenterPage";
+import { setUnauthorizedHandler } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
+import { AdminDashboard } from "../pages/AdminDashboard";
 import { LoginPage } from "../pages/LoginPage";
+import { RegisterPage } from "../pages/RegisterPage";
+import { ScholarSearchHome } from "../pages/ScholarSearchHome";
 import { TopicPage } from "../pages/TopicPage";
 import { AppLayout } from "./AppLayout";
 
 const AuthEventsBridge = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { switchAccount } = useAuth();
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
+      switchAccount();
       if (location.pathname !== "/login") {
         navigate("/login", { replace: true });
       }
@@ -33,54 +34,73 @@ const AuthEventsBridge = () => {
     return () => {
       setUnauthorizedHandler(null);
     };
-  }, [location.pathname, navigate]);
+  }, [location.pathname, navigate, switchAccount]);
 
   return null;
 };
 
-const AuthGuard = () => {
+const RequireAuth = () => {
   const location = useLocation();
-  const [status, setStatus] = useState<"checking" | "valid" | "invalid">("checking");
+  const { checking, isAuthenticated } = useAuth();
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const verify = async () => {
-      if (!getAccessToken()) {
-        if (!cancelled) {
-          setStatus("invalid");
-        }
-        return;
-      }
-
-      setStatus("checking");
-
-      const valid = await validateAccessToken();
-      if (!cancelled) {
-        setStatus(valid ? "valid" : "invalid");
-      }
-    };
-
-    void verify();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [location.pathname]);
-
-  if (status === "checking") {
+  if (checking) {
     return <div className="auth-check">Checking session...</div>;
   }
 
-  if (status === "invalid") {
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  }
+
+  return <Outlet />;
+};
+
+const RequireAdmin = () => {
+  const { checking, isAuthenticated, isAdmin } = useAuth();
+
+  if (checking) {
+    return <div className="auth-check">Checking session...</div>;
+  }
+
+  if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
+  }
+
+  if (!isAdmin) {
+    return (
+      <section className="admin-page">
+        <article className="admin-unauthorized-card">
+          <h2>403 Forbidden</h2>
+          <p>Admin role is required to access this page.</p>
+        </article>
+      </section>
+    );
+  }
+
+  return <Outlet />;
+};
+
+const GuestOnly = () => {
+  const { checking, isAuthenticated } = useAuth();
+
+  if (checking) {
+    return <div className="auth-check">Checking session...</div>;
+  }
+
+  if (isAuthenticated) {
+    return <Navigate to="/app-center" replace />;
   }
 
   return <Outlet />;
 };
 
 const HomeRedirect = () => {
-  return <Navigate to={getAccessToken() ? "/app-center" : "/login"} replace />;
+  const { checking, isAuthenticated } = useAuth();
+
+  if (checking) {
+    return <div className="auth-check">Checking session...</div>;
+  }
+
+  return <Navigate to={isAuthenticated ? "/app-center" : "/login"} replace />;
 };
 
 const LegacyTopicsRedirect = () => {
@@ -95,10 +115,16 @@ export const AppRoutes = () => {
     <BrowserRouter>
       <AuthEventsBridge />
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
+        <Route element={<GuestOnly />}>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+        </Route>
 
-        <Route element={<AuthGuard />}>
-          <Route path="/app-center" element={<AppCenterPage />} />
+        <Route element={<RequireAuth />}>
+          <Route path="/app-center" element={<ScholarSearchHome />} />
+          <Route element={<RequireAdmin />}>
+            <Route path="/admin" element={<AdminDashboard />} />
+          </Route>
           <Route path="/app" element={<AppLayout />}>
             <Route index element={<TopicPage />} />
             <Route path=":topicId" element={<TopicPage />} />

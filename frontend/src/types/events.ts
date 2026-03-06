@@ -127,14 +127,37 @@ export interface ApprovalResolvedPayload {
   note?: string;
 }
 
+export interface AdminSeriesPoint {
+  t: number;
+  count: number;
+}
+
+export interface AdminPendingApproval {
+  topicId: string;
+  runId: string;
+  awaitingModule?: string | null;
+  updatedAt: number;
+}
+
+export interface AdminRecentError {
+  ts: number;
+  runId: string;
+  module: string;
+  message: string;
+}
+
 export interface AdminMetricsPayload {
   ts: number;
   activeRuns: number;
   runsLast5m: number;
   eventsLast5m: number;
-  moduleInFlight: Record<AgentId, number>;
+  moduleInFlight: Record<string, number>;
   approvalsPending: number;
   errorRateLast5m: number;
+  eventsSeries: AdminSeriesPoint[];
+  errorSeries: AdminSeriesPoint[];
+  pendingApprovals: AdminPendingApproval[];
+  recentErrors: AdminRecentError[];
 }
 
 export interface Event {
@@ -185,6 +208,18 @@ export interface SnapshotResponse {
   agents: AgentStatus[];
   events: Event[];
   artifacts: Artifact[];
+  activeRun?: {
+    runId: string;
+    topicId: string;
+    status: string;
+    createdAt: number;
+    startedAt?: number | null;
+    endedAt?: number | null;
+    currentModule?: string | null;
+    awaitingApproval?: boolean;
+    awaitingModule?: string | null;
+    config?: RunConfig | null;
+  } | null;
 }
 
 export interface RunDetail {
@@ -499,7 +534,58 @@ const isAdminMetricsPayload = (payload: unknown): payload is AdminMetricsPayload
   }
 
   const moduleInFlight = payload.moduleInFlight as Record<string, unknown>;
-  return AGENT_IDS.every((agentId) => isFiniteNumber(moduleInFlight[agentId]));
+  if (!AGENT_IDS.every((agentId) => isFiniteNumber(moduleInFlight[agentId]))) {
+    return false;
+  }
+
+  if (moduleInFlight.unknown !== undefined && !isFiniteNumber(moduleInFlight.unknown)) {
+    return false;
+  }
+
+  const isSeriesPoint = (item: unknown): item is AdminSeriesPoint => {
+    return isObject(item) && isFiniteNumber(item.t) && isFiniteNumber(item.count);
+  };
+
+  if (!Array.isArray(payload.eventsSeries) || !payload.eventsSeries.every(isSeriesPoint)) {
+    return false;
+  }
+
+  if (!Array.isArray(payload.errorSeries) || !payload.errorSeries.every(isSeriesPoint)) {
+    return false;
+  }
+
+  const isPendingApproval = (item: unknown): item is AdminPendingApproval => {
+    if (!isObject(item)) {
+      return false;
+    }
+    if (!isNonEmptyString(item.topicId) || !isNonEmptyString(item.runId) || !isFiniteNumber(item.updatedAt)) {
+      return false;
+    }
+    if (item.awaitingModule !== undefined && item.awaitingModule !== null && !isNonEmptyString(item.awaitingModule)) {
+      return false;
+    }
+    return true;
+  };
+
+  if (!Array.isArray(payload.pendingApprovals) || !payload.pendingApprovals.every(isPendingApproval)) {
+    return false;
+  }
+
+  const isRecentError = (item: unknown): item is AdminRecentError => {
+    return (
+      isObject(item) &&
+      isFiniteNumber(item.ts) &&
+      isNonEmptyString(item.runId) &&
+      isNonEmptyString(item.module) &&
+      isNonEmptyString(item.message)
+    );
+  };
+
+  if (!Array.isArray(payload.recentErrors) || !payload.recentErrors.every(isRecentError)) {
+    return false;
+  }
+
+  return true;
 };
 
 export const isEvent = (value: unknown): value is Event => {
@@ -680,6 +766,13 @@ export const parseApprovalResolvedPayload = (event: Event): ApprovalResolvedPayl
     return null;
   }
   return isApprovalResolvedPayload(event.payload) ? event.payload : null;
+};
+
+export const parseAdminMetricsFromEvent = (event: Event): AdminMetricsPayload | null => {
+  if (event.kind !== "admin_metrics") {
+    return null;
+  }
+  return isAdminMetricsPayload(event.payload) ? event.payload : null;
 };
 
 export const mapEventToTraceItems = (event: Event): TraceItem[] => {

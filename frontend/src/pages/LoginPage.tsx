@@ -1,6 +1,6 @@
-import { FormEvent, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { getAccessToken, login, setAccessToken, validateAccessToken } from "../api/client";
+import { FormEvent, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/AuthContext";
 
 const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
@@ -11,48 +11,12 @@ const getErrorMessage = (error: unknown): string => {
 
 export const LoginPage = () => {
   const navigate = useNavigate();
+  const { login } = useAuth();
 
   const [username, setUsername] = useState("demo");
   const [password, setPassword] = useState("demo");
   const [loading, setLoading] = useState(false);
-  const [checkingToken, setCheckingToken] = useState(true);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const verifyToken = async () => {
-      const token = getAccessToken();
-      if (!token) {
-        if (!cancelled) {
-          setCheckingToken(false);
-        }
-        return;
-      }
-
-      const valid = await validateAccessToken();
-      if (!valid) {
-        if (!cancelled) {
-          setCheckingToken(false);
-        }
-        return;
-      }
-
-      if (!cancelled) {
-        navigate("/app-center", { replace: true });
-      }
-    };
-
-    void verifyToken().finally(() => {
-      if (!cancelled) {
-        setCheckingToken(false);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [navigate]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -60,8 +24,7 @@ export const LoginPage = () => {
     setError("");
 
     try {
-      const response = await login(username.trim(), password);
-      setAccessToken(response.access_token);
+      await login(username.trim(), password);
       navigate("/app-center", { replace: true });
     } catch (loginError) {
       setError(getErrorMessage(loginError));
@@ -70,15 +33,11 @@ export const LoginPage = () => {
     }
   };
 
-  if (checkingToken) {
-    return <div className="auth-check">Checking session...</div>;
-  }
-
   return (
     <div className="login-page">
       <form className="login-card" onSubmit={handleSubmit}>
         <h1>SciAgentDemo</h1>
-        <p>Login with demo account</p>
+        <p>Sign in to continue.</p>
 
         <label>
           Username
@@ -104,6 +63,10 @@ export const LoginPage = () => {
         <button type="submit" disabled={loading}>
           {loading ? "Signing in..." : "Sign In"}
         </button>
+
+        <p className="auth-page-switch">
+          No account? <Link to="/register">Create one</Link>
+        </p>
       </form>
     </div>
   );

@@ -1,8 +1,9 @@
-﻿from fastapi import FastAPI
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import api_router
 from app.core.config import get_settings
+from app.core.security import seed_default_users
 from app.models.schemas import HealthResponse
 from app.store import init_db
 
@@ -28,6 +29,7 @@ app.include_router(api_router)
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    seed_default_users()
 
 
 @app.get("/api/health", response_model=HealthResponse, tags=["health"])

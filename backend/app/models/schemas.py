@@ -119,18 +119,69 @@ class UserRole(str, Enum):
 
 
 class LoginRequest(BaseModel):
-    username: str
+    username: str | None = None
+    email: str | None = None
     password: str
 
+    @model_validator(mode="after")
+    def validate_login(self) -> "LoginRequest":
+        login = (self.username or self.email or "").strip()
+        if not login:
+            raise ValueError("username or email is required")
+        if not self.password:
+            raise ValueError("password is required")
+        self.username = login
+        if self.email is not None:
+            self.email = self.email.strip() or None
+        return self
 
-class LoginResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
+
+class RegisterRequest(BaseModel):
+    username: str | None = None
+    email: str | None = None
+    password: str
+
+    @model_validator(mode="after")
+    def validate_register(self) -> "RegisterRequest":
+        username = (self.username or self.email or "").strip()
+        if not username:
+            raise ValueError("username or email is required")
+        if not self.password or len(self.password) < 4:
+            raise ValueError("password must be at least 4 characters")
+        self.username = username
+        if self.email is None:
+            self.email = username
+        if self.email is not None:
+            self.email = self.email.strip() or None
+        return self
+
+
+class AuthUser(BaseModel):
+    id: str
+    email: str
     role: UserRole
 
 
+class AuthTokenResponse(BaseModel):
+    token: str
+    user: AuthUser
+    access_token: str | None = None
+    token_type: str = "bearer"
+    expires_in: int
+    role: UserRole | None = None
+
+    @model_validator(mode="after")
+    def align_compat_fields(self) -> "AuthTokenResponse":
+        if not self.access_token:
+            self.access_token = self.token
+        if self.role is None:
+            self.role = self.user.role
+        return self
+
+
 class AuthMeResponse(BaseModel):
+    id: str
+    email: str
     username: str
     role: UserRole
 
@@ -187,11 +238,26 @@ class AgentSnapshot(BaseModel):
     updatedAt: int | None = None
 
 
+class SnapshotActiveRun(BaseModel):
+    runId: str
+    topicId: str
+    status: str
+    currentModule: str | None = None
+    awaitingApproval: bool = False
+    awaitingModule: str | None = None
+    createdAt: int
+    startedAt: int | None = None
+    endedAt: int | None = None
+    approvalResolvedAt: int | None = None
+    config: RunConfig | None = None
+
+
 class SnapshotResponse(BaseModel):
     topic: TopicDetail
     agents: list[AgentSnapshot]
     events: list[Event]
     artifacts: list[ArtifactRef] = Field(default_factory=list)
+    activeRun: SnapshotActiveRun | None = None
 
 
 class ModuleConfig(BaseModel):
@@ -238,6 +304,7 @@ class RunCreateResponse(BaseModel):
     currentModule: str | None = None
     awaitingApproval: bool | None = None
     awaitingModule: str | None = None
+    approvalResolvedAt: int | None = None
     config: RunConfig | None = None
 
 
@@ -256,6 +323,9 @@ class RunApproveRequest(BaseModel):
 
 class RunApproveResponse(BaseModel):
     ok: bool
+    noOp: bool = False
+    alreadyResolved: bool = False
+    detail: str | None = None
 
 
 class RunDetailResponse(BaseModel):
@@ -268,7 +338,27 @@ class RunDetailResponse(BaseModel):
     currentModule: str | None = None
     awaitingApproval: bool = False
     awaitingModule: str | None = None
+    approvalResolvedAt: int | None = None
     config: RunConfig | None = None
+
+
+class AdminSeriesPoint(BaseModel):
+    t: int = Field(ge=0)
+    count: int = Field(ge=0)
+
+
+class PendingApprovalItem(BaseModel):
+    topicId: str
+    runId: str
+    awaitingModule: str | None = None
+    updatedAt: int = Field(ge=0)
+
+
+class RecentErrorItem(BaseModel):
+    ts: int = Field(ge=0)
+    runId: str
+    module: str
+    message: str
 
 
 class AdminOverviewResponse(BaseModel):
@@ -279,6 +369,10 @@ class AdminOverviewResponse(BaseModel):
     moduleInFlight: dict[str, int]
     approvalsPending: int = Field(ge=0)
     errorRateLast5m: float = Field(ge=0.0, le=1.0)
+    eventsSeries: list[AdminSeriesPoint] = Field(default_factory=list)
+    errorSeries: list[AdminSeriesPoint] = Field(default_factory=list)
+    pendingApprovals: list[PendingApprovalItem] = Field(default_factory=list)
+    recentErrors: list[RecentErrorItem] = Field(default_factory=list)
 
 
 class AgentCommandRequest(BaseModel):

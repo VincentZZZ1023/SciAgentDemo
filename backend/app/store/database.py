@@ -4,6 +4,7 @@ import asyncio
 import json
 import shutil
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -54,7 +55,7 @@ def _json_loads(value: object | None) -> object | None:
 
 ARTIFACTS_ROOT = _resolve_artifacts_root()
 
-_CORE_TABLES = ("topics", "runs", "events", "artifacts", "messages")
+_CORE_TABLES = ("topics", "runs", "events", "artifacts", "messages", "users")
 
 
 def init_db() -> None:
@@ -178,6 +179,7 @@ class DatabaseStore:
             "currentModule": run.current_module,
             "awaitingApproval": run.awaiting_approval,
             "awaitingModule": run.awaiting_module,
+            "approvalResolvedAt": run.approval_resolved_at,
         }
 
     def _event_to_payload(self, session: Session, row: EventTable) -> dict:
@@ -371,6 +373,7 @@ class DatabaseStore:
                     current_module=None,
                     awaiting_approval=False,
                     awaiting_module=None,
+                    approval_resolved_at=None,
                     config_json=config or {},
                 )
 
@@ -390,6 +393,7 @@ class DatabaseStore:
             "currentModule": None,
             "awaitingApproval": False,
             "awaitingModule": None,
+            "approvalResolvedAt": None,
         }
 
     async def get_run(self, run_id: str) -> dict | None:
@@ -408,6 +412,7 @@ class DatabaseStore:
         current_module: str | None | object = _UNSET,
         awaiting_approval: bool | None = None,
         awaiting_module: str | None | object = _UNSET,
+        approval_resolved_at: int | None | object = _UNSET,
         touch_started_at: bool = False,
         touch_ended_at: bool = False,
     ) -> dict:
@@ -433,6 +438,8 @@ class DatabaseStore:
                     run.awaiting_approval = awaiting_approval
                 if awaiting_module is not _UNSET:
                     run.awaiting_module = awaiting_module
+                if approval_resolved_at is not _UNSET:
+                    run.approval_resolved_at = approval_resolved_at
                 if touch_started_at:
                     run.started_at = timestamp
                 if touch_ended_at or (status in RUN_TERMINAL_STATUSES if status is not None else False):
@@ -578,6 +585,7 @@ class DatabaseStore:
                 raise KeyError(topic_id)
 
             last_run_id, active_run_id = self._resolve_topic_runs(session, topic.id)
+            active_run = session.get(RunTable, active_run_id) if active_run_id else None
 
             events_rows = session.exec(
                 select(EventTable)
@@ -604,6 +612,7 @@ class DatabaseStore:
                 "agents": agents,
                 "events": [self._event_to_payload(session, row) for row in events_rows],
                 "artifacts": [self._artifact_to_payload(row) for row in artifacts_rows],
+                "activeRun": self._run_to_payload(active_run) if active_run is not None else None,
             }
 
     async def get_artifact_file(

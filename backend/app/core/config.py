@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     deepseek_max_retries: int = 1
     deepseek_retry_backoff_seconds: float = 1.5
 
+    admin_email: str = "admin"
+    admin_password: str = "admin"
+    demo_email: str = "demo"
+    demo_password: str = "demo"
+
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 
     @field_validator("cors_origins", mode="before")

@@ -35,6 +35,7 @@ class RunTable(SQLModel, table=True):
     current_module: str | None = Field(default=None, index=True)
     awaiting_approval: bool = Field(default=False, index=True)
     awaiting_module: str | None = Field(default=None, index=True)
+    approval_resolved_at: int | None = Field(default=None, index=True)
     config_json: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSONType, nullable=False),
@@ -85,3 +86,13 @@ class MessageTable(SQLModel, table=True):
     role: str = Field(index=True)
     content: str
     ts: int = Field(index=True)
+
+
+class UserTable(SQLModel, table=True):
+    __tablename__ = "users"
+
+    id: str = Field(primary_key=True, index=True)
+    email: str = Field(index=True, unique=True)
+    password_hash: str
+    role: str = Field(index=True)
+    created_at: int = Field(index=True)

@@ -1,6 +1,7 @@
-﻿import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { createTopic, deleteTopic, getTopics } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import { TopicList } from "../components/sidebar/TopicList";
 import type { TopicSummary } from "../types/events";
 
@@ -19,11 +20,21 @@ const getErrorMessage = (error: unknown): string => {
 
 export const AppLayout = () => {
   const navigate = useNavigate();
+  const { user, isAdmin, logout, switchAccount } = useAuth();
   const location = useLocation();
   const { topicId } = useParams();
   const searchParams = new URLSearchParams(location.search);
   const queryTopicId = searchParams.get("topicId");
   const queryRunId = searchParams.get("runId");
+
+  const buildTopicUrl = useCallback((nextTopicId: string, runId?: string | null): string => {
+    const params = new URLSearchParams();
+    params.set("view", "classic");
+    if (runId) {
+      params.set("runId", runId);
+    }
+    return `/app/${nextTopicId}?${params.toString()}`;
+  }, []);
 
   const [topics, setTopics] = useState<TopicSummary[]>([]);
   const [loadingTopics, setLoadingTopics] = useState(false);
@@ -51,13 +62,12 @@ export const AppLayout = () => {
 
   useEffect(() => {
     if (!topicId && queryTopicId && topics.some((topic) => topic.topicId === queryTopicId)) {
-      const query = queryRunId ? `?runId=${encodeURIComponent(queryRunId)}` : "";
-      navigate(`/app/${queryTopicId}${query}`, { replace: true });
+      navigate(buildTopicUrl(queryTopicId, queryRunId), { replace: true });
       return;
     }
 
     if (!topicId && topics.length > 0) {
-      navigate(`/app/${topics[0].topicId}`, { replace: true });
+      navigate(buildTopicUrl(topics[0].topicId), { replace: true });
       return;
     }
 
@@ -68,17 +78,17 @@ export const AppLayout = () => {
       !topicsError &&
       !topics.some((topic) => topic.topicId === topicId)
     ) {
-      navigate(`/app/${topics[0].topicId}`, { replace: true });
+      navigate(buildTopicUrl(topics[0].topicId), { replace: true });
     }
-  }, [loadingTopics, navigate, queryRunId, queryTopicId, topicId, topics, topicsError]);
+  }, [buildTopicUrl, loadingTopics, navigate, queryRunId, queryTopicId, topicId, topics, topicsError]);
 
   const handleSelectTopic = (selectedTopicId: string) => {
-    navigate(`/app/${selectedTopicId}`);
+    navigate(buildTopicUrl(selectedTopicId));
   };
 
   const handleCreateTopic = async (name: string, description: string) => {
     const created = await createTopic(name, description);
-    navigate(`/app/${created.topicId}`);
+    navigate(buildTopicUrl(created.topicId));
     void refreshTopics();
   };
 
@@ -92,13 +102,13 @@ export const AppLayout = () => {
     }
 
     if (!topicId || topicId === topicIdToDelete) {
-      navigate(`/app/${refreshedTopics[0].topicId}`, { replace: true });
+      navigate(buildTopicUrl(refreshedTopics[0].topicId), { replace: true });
       return;
     }
 
     const stillExists = refreshedTopics.some((topic) => topic.topicId === topicId);
     if (!stillExists) {
-      navigate(`/app/${refreshedTopics[0].topicId}`, { replace: true });
+      navigate(buildTopicUrl(refreshedTopics[0].topicId), { replace: true });
     }
   };
 
@@ -106,6 +116,8 @@ export const AppLayout = () => {
     <div className="app-shell">
       <aside className="app-sidebar">
         <TopicList
+          user={user}
+          isAdmin={isAdmin}
           topics={topics}
           currentTopicId={topicId}
           loading={loadingTopics}
@@ -114,6 +126,14 @@ export const AppLayout = () => {
           onCreate={handleCreateTopic}
           onDelete={handleDeleteTopic}
           onRefresh={refreshTopics}
+          onSwitchAccount={() => {
+            switchAccount();
+            navigate("/login", { replace: true });
+          }}
+          onLogout={() => {
+            logout();
+            navigate("/login", { replace: true });
+          }}
         />
       </aside>
 

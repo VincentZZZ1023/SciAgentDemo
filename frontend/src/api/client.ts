@@ -1,4 +1,5 @@
 import type {
+  AdminMetricsPayload,
   AgentId,
   Message,
   RunConfig,
@@ -10,12 +11,19 @@ import type {
   TopicSummary,
 } from "../types/events";
 
-export const ACCESS_TOKEN_KEY = "access_token";
+export const ACCESS_TOKEN_KEY = "sciagent_token";
 
 interface LoginResponse {
   access_token: string;
   token_type: string;
   expires_in: number;
+  role?: string;
+}
+
+interface RegisterRequest {
+  username?: string;
+  email?: string;
+  password: string;
 }
 
 interface AuthMeResponse {
@@ -215,6 +223,14 @@ export const login = async (username: string, password: string): Promise<LoginRe
   });
 };
 
+export const register = async (payload: RegisterRequest): Promise<LoginResponse> => {
+  return apiFetch<LoginResponse>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    skipAuth: true,
+  });
+};
+
 export const getAuthMe = async (): Promise<AuthMeResponse> => {
   return apiFetch<AuthMeResponse>("/api/auth/me", {
     method: "GET",
@@ -349,6 +365,12 @@ export const postAgentMessage = async (
 export const getTopicTrace = async (topicId: string, runId?: string): Promise<TraceResponse> => {
   const query = runId ? `?runId=${encodeURIComponent(runId)}` : "";
   return apiFetch<TraceResponse>(`/api/topics/${topicId}/trace${query}`, {
+    method: "GET",
+  });
+};
+
+export const getAdminOverview = async (): Promise<AdminMetricsPayload> => {
+  return apiFetch<AdminMetricsPayload>("/api/admin/overview", {
     method: "GET",
   });
 };
