@@ -81,6 +81,8 @@
 ```powershell
 .\dev-up.ps1 -Quick
 .\dev-up.ps1 -Test
+.\dev-up.ps1 -SmokeUser
+.\dev-up.ps1 -SmokeAdmin
 .\dev-up.ps1 -InstallDeps
 .\dev-up.ps1 -OpenBrowser
 .\dev-up.ps1 -NoBrowser
@@ -104,12 +106,28 @@
 - `-OpenAdmin`：启动后直接打开 `http://localhost:5173/admin`（管理员大屏）。
 - `-NoBrowser`：启动服务但不自动打开浏览器（覆盖 OneClick/Quick/Test 的默认打开行为）。
 - `-OpenAppCenter`：即使不是 OneClick/Quick，也可强制启动后打开 `/app-center`。
-- `-Test` = `-Quick` + 自动登录 demo + 自动确保 topic + 自动创建 run，并打开到 `/app/{topicId}?runId=...`。
+- `-Test`：兼容旧参数，等价于 `-SmokeUser`。
+- `-SmokeUser`：启动服务后执行 `scripts/smoke-user.ps1`，自动登录 demo、创建 topic/run，并打开运行页。
+- `-SmokeAdmin`：启动服务后执行 `scripts/smoke-admin.ps1`，自动验证管理员接口，并打开 `/admin`。
 - `-SkipDocker`：不自动拉起 docker compose postgres（你自己管理数据库时用）。
 - `-SkipMigrate`：跳过自动 Alembic 迁移。
 - 双击 `dev-up.bat` 默认就是 `-OneClick` 模式（含数据库自举）。
-- 双击 `dev-test.bat` 可直接进入 `-Test` 模式。
+- 双击 `dev-test.bat` 可直接进入 `-SmokeUser` 模式。
+- 双击 `dev-smoke-user.bat`：只执行用户 smoke。
+- 双击 `dev-smoke-admin.bat`：只执行管理员 smoke。
 - `-Status` 可快速查看前后端是否在线、端口占用和已记录 PID。
+
+推荐日常用法：
+
+```powershell
+.\dev-up.ps1
+.\scripts\smoke-user.ps1 -OpenBrowser
+.\scripts\smoke-admin.ps1 -OpenBrowser
+```
+
+说明：
+- `dev-up.ps1` 现在只负责稳定启动服务。
+- 用户端测试和管理员端测试已拆到 `scripts/`，避免以后每次改业务都要改主启动脚本。
 
 ### 手动启动
 

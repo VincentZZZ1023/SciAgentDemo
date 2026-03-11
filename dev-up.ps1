@@ -10,9 +10,14 @@ param(
   [switch]$OneClick,
   [switch]$Quick,
   [switch]$Test,
+  [switch]$SmokeUser,
+  [switch]$SmokeAdmin,
   [switch]$OpenAppCenter,
+  [switch]$OpenHome,
   [switch]$OpenAdmin,
   [switch]$OpenClassic,
+  [switch]$OpenChat,
+  [switch]$OpenRunPage,
   [switch]$NoRestart,
   [switch]$ForceCleanPorts,
   [switch]$RequireDeepSeek,
@@ -32,6 +37,9 @@ if (Get-Variable -Name "PSNativeCommandUseErrorActionPreference" -ErrorAction Si
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BackendDir = Join-Path $RepoRoot "backend"
 $FrontendDir = Join-Path $RepoRoot "frontend"
+$ScriptsDir = Join-Path $RepoRoot "scripts"
+$SmokeUserScript = Join-Path $ScriptsDir "smoke-user.ps1"
+$SmokeAdminScript = Join-Path $ScriptsDir "smoke-admin.ps1"
 $ComposeFile = Join-Path $RepoRoot "docker-compose.yml"
 $StateDir = Join-Path $RepoRoot ".dev"
 $PidFile = Join-Path $StateDir "dev-up.pids.json"
@@ -49,9 +57,16 @@ if ($AutoOneClick) {
 $EffectiveRestart = $Restart -or $Quick -or $OneClick -or $Test -or (-not $NoRestart)
 $EffectiveForceCleanPorts = $ForceCleanPorts -or $Quick -or $OneClick -or $Test
 $EffectiveOpenBrowser = ($OpenBrowser -or $Quick -or $OneClick -or $Test) -and (-not $NoBrowser)
+$OpenRunPageCreatesSmoke = ($OpenRunPage -or $OpenChat) -and (-not $SmokeAdmin)
+$EffectiveSmokeUser = $SmokeUser -or $Test -or $OpenRunPageCreatesSmoke
+$EffectiveSmokeAdmin = $SmokeAdmin
 $EffectiveOpenAdmin = $OpenAdmin
-$EffectiveOpenClassic = $OpenClassic
-$EffectiveOpenAppCenter = $OpenAppCenter -or (($OneClick -or $Quick) -and (-not $OpenClassic) -and (-not $OpenAdmin))
+$EffectiveOpenClassic = $OpenClassic -or $OpenRunPage -or $OpenChat
+$EffectiveOpenAppCenter = $OpenAppCenter -or $OpenHome -or (($OneClick -or $Quick) -and (-not $OpenClassic) -and (-not $OpenRunPage) -and (-not $OpenChat) -and (-not $OpenAdmin))
+
+if ($EffectiveSmokeUser -and $EffectiveSmokeAdmin) {
+  throw "SmokeUser and SmokeAdmin cannot be used together."
+}
 
 if (-not (Test-Path $RootEnvFile) -and (Test-Path $RootEnvExample)) {
   Copy-Item -Path $RootEnvExample -Destination $RootEnvFile -Force
@@ -114,7 +129,19 @@ if (-not $Stop -and -not $Status) {
   }
 
   if ($Test) {
-    Write-Host "[dev-up] Test mode enabled: quick API smoke + auto topic/run + open browser to run panel." -ForegroundColor Cyan
+    Write-Host "[dev-up] Test mode enabled: start services, then run user smoke script." -ForegroundColor Cyan
+  }
+
+  if ($OpenRunPageCreatesSmoke -and -not $SmokeUser -and -not $Test) {
+    Write-Host "[dev-up] OpenRunPage/OpenChat enabled: create a demo run, then open the classic chat run page." -ForegroundColor Cyan
+  }
+
+  if ($SmokeUser -and -not $Test) {
+    Write-Host "[dev-up] User smoke enabled: start services, then create a demo run." -ForegroundColor Cyan
+  }
+
+  if ($SmokeAdmin) {
+    Write-Host "[dev-up] Admin smoke enabled: start services, then verify /api/admin/overview." -ForegroundColor Cyan
   }
 
   if (-not $Test -and $EffectiveOpenBrowser) {
@@ -122,10 +149,15 @@ if (-not $Stop -and -not $Status) {
       Write-Host "[dev-up] Browser target: admin dashboard (/admin)." -ForegroundColor Cyan
     }
     elseif ($EffectiveOpenClassic) {
-      Write-Host "[dev-up] Browser target: classic workflow (/app)." -ForegroundColor Cyan
+      if ($OpenRunPageCreatesSmoke) {
+        Write-Host "[dev-up] Browser target: classic chat run page (created by smoke)." -ForegroundColor Cyan
+      }
+      else {
+        Write-Host "[dev-up] Browser target: classic run workspace (/app)." -ForegroundColor Cyan
+      }
     }
     elseif ($EffectiveOpenAppCenter) {
-      Write-Host "[dev-up] Browser target: app center (/app-center)." -ForegroundColor Cyan
+      Write-Host "[dev-up] Browser target: launcher home (/app-center)." -ForegroundColor Cyan
     }
   }
 
@@ -1182,6 +1214,42 @@ function Invoke-QuickUiTest {
   }
 }
 
+function Invoke-SmokeScript {
+  param(
+    [ValidateSet("user", "admin")]
+    [string]$Kind,
+    [string]$BackendBaseUrl,
+    [string]$FrontendBaseUrl,
+    [string]$Username,
+    [string]$Password,
+    [bool]$OpenBrowserForSmoke
+  )
+
+  $scriptPath = if ($Kind -eq "admin") { $SmokeAdminScript } else { $SmokeUserScript }
+  if (-not (Test-Path $scriptPath)) {
+    throw "Smoke script not found: $scriptPath"
+  }
+
+  $args = @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", $scriptPath,
+    "-BackendBaseUrl", $BackendBaseUrl,
+    "-FrontendBaseUrl", $FrontendBaseUrl,
+    "-Username", $Username,
+    "-Password", $Password
+  )
+
+  if ($OpenBrowserForSmoke) {
+    $args += "-OpenBrowser"
+  }
+
+  & powershell @args
+  if ($LASTEXITCODE -ne 0) {
+    throw "Smoke script failed: $scriptPath"
+  }
+}
+
 function Show-DevStatus {
   $backendHealthy = Test-HttpReadyOnce -Url "http://127.0.0.1:$BackendPort/api/health" -TimeoutSec 2
   $frontendHealthy = Test-HttpReadyOnce -Url "http://127.0.0.1:$FrontendPort" -TimeoutSec 2
@@ -1449,10 +1517,18 @@ else {
   Write-Host "[dev-up] Frontend PID: reused-existing" -ForegroundColor Green
 }
 
-Write-Host "[dev-up] Backend URL:  http://localhost:$BackendPort" -ForegroundColor Green
-Write-Host "[dev-up] Frontend URL: http://localhost:$FrontendPort" -ForegroundColor Green
+Write-Host "[dev-up] Backend URL:   http://localhost:$BackendPort" -ForegroundColor Green
+Write-Host "[dev-up] Frontend URL:  http://localhost:$FrontendPort" -ForegroundColor Green
+Write-Host "[dev-up] Home URL:      http://localhost:$FrontendPort/app-center" -ForegroundColor Green
+Write-Host "[dev-up] Chat URL:      http://localhost:$FrontendPort/app?view=classic&tab=chat" -ForegroundColor Green
+Write-Host "[dev-up] Admin URL:     http://localhost:$FrontendPort/admin" -ForegroundColor Green
 Write-Host "[dev-up] Stop command: .\dev-up.ps1 -Stop" -ForegroundColor Green
 Write-Host "[dev-up] Demo users: $DemoLoginUser/$DemoLoginPass , $AdminLoginUser/$AdminLoginPass" -ForegroundColor Green
+Write-Host "[dev-up] Open home:    .\dev-up.ps1 -OpenHome" -ForegroundColor Green
+Write-Host "[dev-up] Open chat:    .\\dev-up.ps1 -OpenChat      (creates a demo run and opens classic chat)" -ForegroundColor Green
+Write-Host "[dev-up] Open run page:.\\dev-up.ps1 -OpenRunPage   (same as -OpenChat)" -ForegroundColor Green
+Write-Host "[dev-up] User smoke:   .\scripts\smoke-user.ps1 -OpenBrowser" -ForegroundColor Green
+Write-Host "[dev-up] Admin smoke:  .\scripts\smoke-admin.ps1 -OpenBrowser" -ForegroundColor Green
 
 $watchPids = @()
 if ($backendPid -gt 0) {
@@ -1487,7 +1563,7 @@ $BrowserUrl = if ($EffectiveOpenAdmin -and -not $Test) {
   "http://localhost:$FrontendPort/admin"
 }
 elseif ($EffectiveOpenClassic -and -not $Test) {
-  "http://localhost:$FrontendPort/app"
+  "http://localhost:$FrontendPort/app?view=classic&tab=chat"
 }
 elseif ($EffectiveOpenAppCenter -and -not $Test) {
   "http://localhost:$FrontendPort/app-center"
@@ -1496,33 +1572,30 @@ else {
   "http://localhost:$FrontendPort"
 }
 
-if ($Test) {
+if ($EffectiveSmokeUser -or $EffectiveSmokeAdmin) {
   if ($backendReady -and $frontendReady) {
     try {
-      $testResult = Invoke-QuickUiTest -BackendBaseUrl "http://127.0.0.1:$BackendPort" -FrontendBaseUrl "http://localhost:$FrontendPort" -DemoUsername $DemoLoginUser -DemoPassword $DemoLoginPass
-      $topicId = [string]$testResult.topicId
-      $runId = [string]$testResult.runId
-      $BrowserUrl = [string]$testResult.launchUrl
-
-      if ([string]::IsNullOrWhiteSpace($runId)) {
-        Write-Host "[dev-up] Test run created topic=$topicId (runId unavailable)." -ForegroundColor Green
+      if ($EffectiveSmokeAdmin) {
+        Invoke-SmokeScript -Kind "admin" -BackendBaseUrl "http://127.0.0.1:$BackendPort" -FrontendBaseUrl "http://localhost:$FrontendPort" -Username $AdminLoginUser -Password $AdminLoginPass -OpenBrowserForSmoke:$EffectiveOpenBrowser
       }
       else {
-        Write-Host "[dev-up] Test run created topic=$topicId runId=$runId" -ForegroundColor Green
+        Invoke-SmokeScript -Kind "user" -BackendBaseUrl "http://127.0.0.1:$BackendPort" -FrontendBaseUrl "http://localhost:$FrontendPort" -Username $DemoLoginUser -Password $DemoLoginPass -OpenBrowserForSmoke:$EffectiveOpenBrowser
       }
-      Write-Host "[dev-up] Test launch URL: $BrowserUrl" -ForegroundColor Green
     }
     catch {
-      Write-Warning "[dev-up] Test mode smoke failed: $($_.Exception.Message)"
-      Write-Warning "[dev-up] Falling back to default frontend URL."
-      $BrowserUrl = "http://localhost:$FrontendPort"
+      Write-Warning "[dev-up] Smoke failed: $($_.Exception.Message)"
+      if ($EffectiveOpenBrowser) {
+        Write-Warning "[dev-up] Falling back to default frontend URL."
+        $BrowserUrl = "http://localhost:$FrontendPort"
+        Start-Process $BrowserUrl
+      }
     }
   }
   else {
-    Write-Warning "[dev-up] Skipping test-mode smoke because services are not ready."
+    Write-Warning "[dev-up] Skipping smoke because services are not ready."
   }
 }
 
-if ($EffectiveOpenBrowser) {
+elseif ($EffectiveOpenBrowser) {
   Start-Process $BrowserUrl
 }

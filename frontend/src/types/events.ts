@@ -1,3 +1,5 @@
+import { IDEA_TASTE_MODES, type IdeaTasteMode } from "../lib/ideaPreference";
+
 export const AGENT_IDS = ["review", "ideation", "experiment"] as const;
 export type AgentId = (typeof AGENT_IDS)[number];
 
@@ -31,19 +33,21 @@ export type Severity = (typeof SEVERITIES)[number];
 export const MESSAGE_ROLES = ["user", "assistant", "system"] as const;
 export type MessageRole = (typeof MESSAGE_ROLES)[number];
 
-export const THINKING_MODES = ["normal", "deep"] as const;
+export const THINKING_MODES = ["quick", "deep", "pro", "normal"] as const;
 export type ThinkingMode = (typeof THINKING_MODES)[number];
 
 export interface ModuleConfig {
   enabled: boolean;
   model: string;
   requireHuman: boolean;
+  idea_taste_mode?: IdeaTasteMode;
 }
 
 export interface RunConfig {
   thinkingMode: ThinkingMode;
   online: boolean;
   presetName: string;
+  selectedAgents?: AgentId[];
   modules: Record<AgentId, ModuleConfig>;
 }
 
@@ -261,6 +265,7 @@ const severitySet = new Set<string>(SEVERITIES);
 const messageRoleSet = new Set<string>(MESSAGE_ROLES);
 const subtaskStatusSet = new Set<string>(SUBTASK_STATUSES);
 const thinkingModeSet = new Set<string>(THINKING_MODES);
+const ideaTasteModeSet = new Set<string>(IDEA_TASTE_MODES);
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -324,7 +329,9 @@ const isRunConfigModule = (value: unknown): value is ModuleConfig => {
   return (
     typeof value.enabled === "boolean" &&
     isNonEmptyString(value.model) &&
-    typeof value.requireHuman === "boolean"
+    typeof value.requireHuman === "boolean" &&
+    (value.idea_taste_mode === undefined ||
+      (typeof value.idea_taste_mode === "string" && ideaTasteModeSet.has(value.idea_taste_mode)))
   );
 };
 
@@ -342,6 +349,14 @@ export const isRunConfig = (value: unknown): value is RunConfig => {
   }
 
   if (!isNonEmptyString(value.presetName)) {
+    return false;
+  }
+
+  if (
+    value.selectedAgents !== undefined &&
+    (!Array.isArray(value.selectedAgents) ||
+      !value.selectedAgents.every((agentId) => typeof agentId === "string" && agentSet.has(agentId)))
+  ) {
     return false;
   }
 

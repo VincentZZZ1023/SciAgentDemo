@@ -1,4 +1,4 @@
-export type DrawerTab = "log" | "artifacts" | "context" | "cli";
+export type DrawerTab = "log" | "artifacts" | "context";
 
 interface DrawerTabHeaderProps {
   activeTab: DrawerTab;
@@ -9,7 +9,6 @@ const TAB_ITEMS: Array<{ id: DrawerTab; label: string }> = [
   { id: "log", label: "Log" },
   { id: "artifacts", label: "Artifacts" },
   { id: "context", label: "Context" },
-  { id: "cli", label: "CLI" },
 ];
 
 export const DrawerTabHeader = ({ activeTab, onSelectTab }: DrawerTabHeaderProps) => {

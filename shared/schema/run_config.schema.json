@@ -9,8 +9,8 @@
   "properties": {
     "thinkingMode": {
       "type": "string",
-      "enum": ["normal", "deep"],
-      "default": "normal",
+      "enum": ["normal", "quick", "deep", "pro"],
+      "default": "quick",
       "description": "Global thinking strategy for all modules."
     },
     "online": {
@@ -22,6 +22,16 @@
       "type": "string",
       "default": "default",
       "description": "Optional preset name selected by the user."
+    },
+    "selectedAgents": {
+      "type": "array",
+      "description": "Launcher-selected agents for this run.",
+      "default": ["review", "ideation", "experiment"],
+      "items": {
+        "type": "string",
+        "enum": ["review", "ideation", "experiment"]
+      },
+      "uniqueItems": true
     },
     "modules": {
       "type": "object",
@@ -62,6 +72,17 @@
           "type": "boolean",
           "default": false,
           "description": "If true, this module may request manual approval before finishing."
+        },
+        "idea_taste_mode": {
+          "type": "string",
+          "enum": [
+            "moonshot_inventor",
+            "bridge_builder",
+            "steady_engineer",
+            "ambitious_realist",
+            "evidence_first"
+          ],
+          "description": "Optional ideation preference profile used only by the ideation module."
         },
         "toolOptions": {
           "type": "object",

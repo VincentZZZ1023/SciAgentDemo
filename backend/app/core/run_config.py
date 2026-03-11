@@ -7,9 +7,10 @@ from app.models.schemas import RunConfig
 
 
 DEFAULT_RUN_CONFIG: dict[str, Any] = {
-    "thinkingMode": "normal",
+    "thinkingMode": "quick",
     "online": True,
     "presetName": "default",
+    "selectedAgents": ["review", "ideation", "experiment"],
     "modules": {
         "review": {
             "enabled": True,
@@ -20,6 +21,7 @@ DEFAULT_RUN_CONFIG: dict[str, Any] = {
             "enabled": True,
             "model": "deepseek-chat",
             "requireHuman": False,
+            "idea_taste_mode": "evidence_first",
         },
         "experiment": {
             "enabled": True,
@@ -32,4 +34,3 @@ DEFAULT_RUN_CONFIG: dict[str, Any] = {
 
 def get_default_run_config() -> RunConfig:
     return RunConfig.model_validate(deepcopy(DEFAULT_RUN_CONFIG))
-

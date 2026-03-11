@@ -258,10 +258,10 @@
                 "type": "string",
                 "minLength": 1
               },
-              "thinkingMode": {
-                "type": "string",
-                "enum": ["normal", "deep"]
-              },
+                "thinkingMode": {
+                  "type": "string",
+                  "enum": ["normal", "quick", "deep", "pro"]
+                },
               "online": {
                 "type": "boolean"
               }

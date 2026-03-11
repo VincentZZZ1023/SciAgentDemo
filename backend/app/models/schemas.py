@@ -12,6 +12,14 @@ class AgentId(str, Enum):
     experiment = "experiment"
 
 
+class IdeaTasteMode(str, Enum):
+    moonshot_inventor = "moonshot_inventor"
+    bridge_builder = "bridge_builder"
+    steady_engineer = "steady_engineer"
+    ambitious_realist = "ambitious_realist"
+    evidence_first = "evidence_first"
+
+
 class EventKind(str, Enum):
     agent_status_updated = "agent_status_updated"
     event_emitted = "event_emitted"
@@ -264,16 +272,18 @@ class ModuleConfig(BaseModel):
     enabled: bool = True
     model: str = "deepseek-chat"
     requireHuman: bool = False
+    idea_taste_mode: IdeaTasteMode | None = None
 
 
 class RunConfig(BaseModel):
-    thinkingMode: str = Field(default="normal", pattern="^(normal|deep)$")
+    thinkingMode: str = Field(default="quick", pattern="^(normal|quick|deep|pro)$")
     online: bool = True
     presetName: str = "default"
+    selectedAgents: list[AgentId] = Field(default_factory=list)
     modules: dict[str, ModuleConfig] = Field(
         default_factory=lambda: {
             AgentId.review.value: ModuleConfig(),
-            AgentId.ideation.value: ModuleConfig(),
+            AgentId.ideation.value: ModuleConfig(idea_taste_mode=IdeaTasteMode.evidence_first),
             AgentId.experiment.value: ModuleConfig(),
         }
     )
@@ -283,6 +293,39 @@ class RunConfig(BaseModel):
         required_keys = {AgentId.review.value, AgentId.ideation.value, AgentId.experiment.value}
         if set(self.modules.keys()) != required_keys:
             raise ValueError("modules must contain exactly review/ideation/experiment")
+
+        if self.thinkingMode == "normal":
+            self.thinkingMode = "quick"
+
+        if self.selectedAgents:
+            selected_agents: list[AgentId] = []
+            seen_agents: set[AgentId] = set()
+            for agent in self.selectedAgents:
+                if agent in seen_agents:
+                    continue
+                selected_agents.append(agent)
+                seen_agents.add(agent)
+        else:
+            selected_agents = [
+                AgentId(agent_id)
+                for agent_id in (AgentId.review.value, AgentId.ideation.value, AgentId.experiment.value)
+                if self.modules[agent_id].enabled
+            ]
+
+        enabled_agents = {agent.value for agent in selected_agents}
+        for agent_id in required_keys:
+            self.modules[agent_id].enabled = agent_id in enabled_agents if self.selectedAgents else self.modules[agent_id].enabled
+
+        self.selectedAgents = selected_agents
+        self.modules[AgentId.review.value].idea_taste_mode = None
+        self.modules[AgentId.experiment.value].idea_taste_mode = None
+
+        if self.modules[AgentId.ideation.value].enabled:
+            if self.modules[AgentId.ideation.value].idea_taste_mode is None:
+                self.modules[AgentId.ideation.value].idea_taste_mode = IdeaTasteMode.evidence_first
+        else:
+            self.modules[AgentId.ideation.value].idea_taste_mode = None
+
         return self
 
 

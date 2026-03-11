@@ -155,6 +155,14 @@ export const WorkflowSettingsPanel = ({
           >
             Deep
           </button>
+          <button
+            type="button"
+            className={mode === "pro" ? "active" : ""}
+            onClick={() => handleModeChange("pro")}
+            disabled={applying}
+          >
+            Pro
+          </button>
         </div>
 
         <div className="run-config-top-row">
@@ -166,13 +174,17 @@ export const WorkflowSettingsPanel = ({
                 onChange={(event) =>
                   updateDraft((current) => ({
                     ...current,
-                    thinkingMode: event.target.value === "deep" ? "deep" : "normal",
+                    thinkingMode:
+                      event.target.value === "deep" || event.target.value === "pro"
+                        ? event.target.value
+                        : "quick",
                   }))
                 }
                 disabled={applying}
               >
-                <option value="normal">normal</option>
+                <option value="quick">quick</option>
                 <option value="deep">deep</option>
+                <option value="pro">pro</option>
               </select>
             </label>
             <label className="run-config-toggle">

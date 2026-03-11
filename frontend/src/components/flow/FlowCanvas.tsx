@@ -15,6 +15,7 @@ import { AGENT_IDS, type AgentId, type AgentStatus, type AgentSubtask } from "..
 interface FlowCanvasProps {
   agentsStatus: Record<AgentId, AgentStatus>;
   agentSubtasks: Record<AgentId, AgentSubtask[]>;
+  enabledAgents?: AgentId[];
   onSelectAgent: (agentId: AgentId) => void;
 }
 
@@ -27,48 +28,12 @@ const DEFAULT_AGENT_STATUS: AgentStatus = {
   lastSummary: "idle",
 };
 
-const NODE_POSITIONS: Record<AgentId, { x: number; y: number }> = {
-  review: { x: 24, y: 144 },
-  ideation: { x: 396, y: 32 },
-  experiment: { x: 768, y: 144 },
-};
-
 const PARENT_NODE_WIDTH = 332;
 const SUBTASK_TOP_OFFSET = 96;
 const SUBTASK_X_OFFSET = 12;
 const SUBTASK_HEIGHT = 32;
 const SUBTASK_GAP = 8;
-
-const EDGES: Edge[] = [
-  {
-    id: "review-ideation",
-    source: "review",
-    target: "ideation",
-    markerEnd: {
-      type: MarkerType.ArrowClosed,
-    },
-  },
-  {
-    id: "ideation-experiment",
-    source: "ideation",
-    target: "experiment",
-    markerEnd: {
-      type: MarkerType.ArrowClosed,
-    },
-  },
-  {
-    id: "experiment-ideation",
-    source: "experiment",
-    target: "ideation",
-    animated: true,
-    markerEnd: {
-      type: MarkerType.ArrowClosed,
-    },
-    style: {
-      strokeDasharray: "4 4",
-    },
-  },
-];
+const NODE_X_GAP = 72;
 
 const progressText = (value: number): string => `${Math.round(value * 100)}%`;
 
@@ -96,7 +61,67 @@ const calcParentHeight = (subtaskCount: number): number => {
   return SUBTASK_TOP_OFFSET + contentHeight + 14;
 };
 
-export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowCanvasProps) => {
+const buildNodePositions = (visibleAgents: AgentId[]): Record<AgentId, { x: number; y: number }> => {
+  const positions = {} as Record<AgentId, { x: number; y: number }>;
+  const isFullPipeline =
+    visibleAgents.length === 3 &&
+    visibleAgents[0] === "review" &&
+    visibleAgents[1] === "ideation" &&
+    visibleAgents[2] === "experiment";
+
+  visibleAgents.forEach((agentId, index) => {
+    if (isFullPipeline) {
+      positions[agentId] =
+        agentId === "ideation"
+          ? { x: 396, y: 32 }
+          : agentId === "review"
+            ? { x: 24, y: 144 }
+            : { x: 768, y: 144 };
+      return;
+    }
+
+    positions[agentId] = {
+      x: 24 + index * (PARENT_NODE_WIDTH + NODE_X_GAP),
+      y: 104,
+    };
+  });
+
+  return positions;
+};
+
+const buildEdges = (visibleAgents: AgentId[]): Edge[] => {
+  const edges: Edge[] = [];
+
+  for (let index = 0; index < visibleAgents.length - 1; index += 1) {
+    edges.push({
+      id: `${visibleAgents[index]}-${visibleAgents[index + 1]}`,
+      source: visibleAgents[index],
+      target: visibleAgents[index + 1],
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+      },
+    });
+  }
+
+  if (visibleAgents.includes("experiment") && visibleAgents.includes("ideation")) {
+    edges.push({
+      id: "experiment-ideation-feedback",
+      source: "experiment",
+      target: "ideation",
+      animated: true,
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+      },
+      style: {
+        strokeDasharray: "4 4",
+      },
+    });
+  }
+
+  return edges;
+};
+
+export const FlowCanvas = ({ agentsStatus, agentSubtasks, enabledAgents, onSelectAgent }: FlowCanvasProps) => {
   const { theme } = useTheme();
 
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
@@ -109,11 +134,16 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
     }),
     [agentsStatus],
   );
+  const visibleAgents = useMemo(
+    () => (enabledAgents && enabledAgents.length > 0 ? enabledAgents : [...AGENT_IDS]),
+    [enabledAgents],
+  );
+  const nodePositions = useMemo(() => buildNodePositions(visibleAgents), [visibleAgents]);
 
   const nodes = useMemo<Node[]>(() => {
     const nextNodes: Node[] = [];
 
-    (Object.keys(NODE_POSITIONS) as AgentId[]).forEach((agentId) => {
+    visibleAgents.forEach((agentId) => {
       const agent = safeAgentStatus[agentId];
       const subtasks = agentSubtasks[agentId] ?? [];
       const statusClass = `status-badge status-${normalizeStatus(agent.status)}`;
@@ -122,7 +152,7 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
       nextNodes.push({
         id: agentId,
         type: "default",
-        position: NODE_POSITIONS[agentId],
+        position: nodePositions[agentId],
         className: "flow-agent-node",
         data: {
           label: (
@@ -193,10 +223,10 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
     });
 
     return nextNodes;
-  }, [agentSubtasks, safeAgentStatus]);
+  }, [agentSubtasks, nodePositions, safeAgentStatus, visibleAgents]);
 
   const edges = useMemo<Edge[]>(() => {
-    return EDGES.map((edge) => ({
+    return buildEdges(visibleAgents).map((edge) => ({
       ...edge,
       className: "flow-edge",
       style: {
@@ -205,7 +235,7 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, onSelectAgent }: FlowC
         strokeWidth: 1.8,
       },
     }));
-  }, []);
+  }, [visibleAgents]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {

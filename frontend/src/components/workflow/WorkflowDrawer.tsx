@@ -39,7 +39,7 @@ export const WorkflowDrawer = ({
         <header className="workflow-drawer-header">
           <div>
             <h3>Workflow Details</h3>
-            <p className="muted">Log, artifacts, context, and CLI helpers</p>
+            <p className="muted">Log, artifacts, and run context</p>
           </div>
           <button type="button" onClick={onClose}>
             Close

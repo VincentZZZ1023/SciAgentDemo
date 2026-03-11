@@ -4,8 +4,6 @@ import { useNavigate, useOutletContext, useParams, useSearchParams } from "react
 import {
   approveRun,
   fetchArtifactContent,
-  getAccessToken,
-  getBackendBaseUrl,
   getDefaultRunConfig,
   getRun,
   getSnapshot,
@@ -23,6 +21,7 @@ import { EventFeed } from "../components/feed/EventFeed";
 import { FlowCanvas } from "../components/flow/FlowCanvas";
 import { cloneRunConfig, runConfigToMode, sanitizeRunConfig } from "../lib/runConfig";
 import { type DrawerTab } from "../components/workflow/DrawerTabHeader";
+import { RunMessageStream } from "../components/workflow/RunMessageStream";
 import { WorkflowDrawer } from "../components/workflow/WorkflowDrawer";
 import { WorkflowTracePanel, type TraceView } from "../components/workflow/WorkflowTracePanel";
 import {
@@ -198,7 +197,20 @@ const getEventModule = (event: Event): string => {
 };
 
 const toRunStatusClass = (status: string): string => `status-${status || "idle"}`;
-const MODULE_EVENT_KINDS = new Set(["module_started", "module_finished", "module_skipped", "module_failed"]);
+const getWsStatusLabel = (status: WsStatus): string => {
+  if (status === "closed") {
+    return "disconnected";
+  }
+  return status;
+};
+
+type ClassicPrimaryTab = "chat" | "pipeline" | "trace";
+const normalizeClassicPrimaryTab = (value: string | null): ClassicPrimaryTab => {
+  if (value === "pipeline" || value === "trace" || value === "chat") {
+    return value;
+  }
+  return "chat";
+};
 
 export const TopicPage = () => {
   const navigate = useNavigate();
@@ -223,16 +235,14 @@ export const TopicPage = () => {
   const [submittingRun, setSubmittingRun] = useState(false);
   const [error, setError] = useState("");
   const [wsStatus, setWsStatus] = useState<WsStatus>("closed");
+  const [wsStatusTransitioning, setWsStatusTransitioning] = useState(false);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<DrawerTab>("log");
   const [logModuleFilter, setLogModuleFilter] = useState("all");
   const [logKindFilter, setLogKindFilter] = useState("all");
   const [logSeverityFilter, setLogSeverityFilter] = useState("all");
-  const [copiedCommandKey, setCopiedCommandKey] = useState<string | null>(null);
-  const copiedCommandTimerRef = useRef<number | null>(null);
   const [traceView, setTraceView] = useState<TraceView>("timeline");
-  const [classicPrimaryTab, setClassicPrimaryTab] = useState<"pipeline" | "trace">("pipeline");
 
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<AgentId | null>(null);
@@ -257,24 +267,36 @@ export const TopicPage = () => {
   const [artifactModalContent, setArtifactModalContent] = useState("");
   const [artifactModalLoading, setArtifactModalLoading] = useState(false);
   const [artifactModalError, setArtifactModalError] = useState("");
+  const [submittedPromptsByRunId, setSubmittedPromptsByRunId] = useState<Record<string, string>>({});
 
   const queryTopicId = searchParams.get("topicId");
   const queryRunId = searchParams.get("runId");
   const queryDraft = searchParams.get("draft");
   const queryView = searchParams.get("view");
+  const queryTab = searchParams.get("tab");
   const isClassicView = queryView === "classic";
+  const classicPrimaryTab = normalizeClassicPrimaryTab(queryTab);
+  const wsStatusLabel = getWsStatusLabel(wsStatus);
 
   useEffect(() => {
     selectedRunIdRef.current = selectedRunId;
   }, [selectedRunId]);
 
   useEffect(() => {
+    if (wsStatus === "connected") {
+      setWsStatusTransitioning(false);
+      return undefined;
+    }
+
+    setWsStatusTransitioning(true);
+    const timer = window.setTimeout(() => {
+      setWsStatusTransitioning(false);
+    }, 1400);
+
     return () => {
-      if (copiedCommandTimerRef.current !== null) {
-        window.clearTimeout(copiedCommandTimerRef.current);
-      }
+      window.clearTimeout(timer);
     };
-  }, []);
+  }, [wsStatus]);
 
   const fallbackTopic = useMemo(() => topics.find((item) => item.topicId === topicId) ?? null, [topicId, topics]);
 
@@ -287,9 +309,12 @@ export const TopicPage = () => {
       if (modeValue) {
         params.set("mode", modeValue);
       }
+      if (isClassicView) {
+        params.set("tab", classicPrimaryTab);
+      }
       return params;
     },
-    [searchParams],
+    [classicPrimaryTab, isClassicView, searchParams],
   );
 
   const runArtifacts = useMemo(() => {
@@ -314,6 +339,13 @@ export const TopicPage = () => {
     }
     return runConfigDraft;
   }, [runConfigDraft, runDetail?.config]);
+  const pipelineAgents = useMemo(() => {
+    if (!activeRunConfig) {
+      return [...AGENT_IDS];
+    }
+
+    return AGENT_IDS.filter((agentId) => activeRunConfig.modules[agentId]?.enabled);
+  }, [activeRunConfig]);
 
   const logSourceEvents = useMemo(() => {
     return selectedRunId ? events.filter((event) => event.runId === selectedRunId) : events;
@@ -375,46 +407,6 @@ export const TopicPage = () => {
     }
     return null;
   }, [activeRunConfig, defaultRunConfig]);
-
-  const cliToken = useMemo(() => getAccessToken() ?? "$TOKEN", []);
-  const cliBaseUrl = useMemo(() => getBackendBaseUrl(), []);
-  const createRunPayloadJson = useMemo(() => {
-    const payload: Record<string, unknown> = {
-      prompt: prompt.trim() || "Describe the research task here",
-    };
-    if (configForContext) {
-      payload.config = configForContext;
-    }
-    return JSON.stringify(payload, null, 2);
-  }, [configForContext, prompt]);
-
-  const cliCommands = useMemo(() => {
-    const safeTopicId = topicId ?? "<topic_id>";
-    const runId = selectedRunId ?? "<run_id>";
-    const approveModule =
-      runDetail?.awaitingModule && AGENT_IDS.includes(runDetail.awaitingModule as AgentId)
-        ? (runDetail.awaitingModule as AgentId)
-        : "experiment";
-    const createRunCommand =
-      `curl -X POST "${cliBaseUrl}/api/topics/${safeTopicId}/runs" \\\n` +
-      `  -H "Authorization: Bearer ${cliToken}" \\\n` +
-      `  -H "Content-Type: application/json" \\\n` +
-      `  -d '${createRunPayloadJson}'`;
-    const approveRunCommand =
-      `curl -X POST "${cliBaseUrl}/api/runs/${runId}/approve" \\\n` +
-      `  -H "Authorization: Bearer ${cliToken}" \\\n` +
-      `  -H "Content-Type: application/json" \\\n` +
-      `  -d '{"module":"${approveModule}","approved":true,"note":"approved from drawer"}'`;
-    const snapshotCommand =
-      `curl -X GET "${cliBaseUrl}/api/topics/${safeTopicId}/snapshot?limit=200" \\\n` +
-      `  -H "Authorization: Bearer ${cliToken}"`;
-
-    return [
-      { key: "create-run", label: "Create run", command: createRunCommand },
-      { key: "approve-run", label: "Approve run", command: approveRunCommand },
-      { key: "get-snapshot", label: "Get snapshot", command: snapshotCommand },
-    ];
-  }, [cliBaseUrl, cliToken, createRunPayloadJson, runDetail?.awaitingModule, selectedRunId, topicId]);
 
   useEffect(() => {
     if (runDetail?.config && isRunConfig(runDetail.config)) {
@@ -652,8 +644,18 @@ export const TopicPage = () => {
   }, [queryRunId, topicId]);
 
   useEffect(() => {
-    setClassicPrimaryTab("pipeline");
-  }, [topicId]);
+    if (!isClassicView) {
+      return;
+    }
+
+    if (queryTab === classicPrimaryTab) {
+      return;
+    }
+
+    const params = new URLSearchParams(searchParams);
+    params.set("tab", classicPrimaryTab);
+    setSearchParams(params, { replace: true });
+  }, [classicPrimaryTab, isClassicView, queryTab, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (!queryDraft) {
@@ -741,6 +743,10 @@ export const TopicPage = () => {
         config,
       });
 
+      setSubmittedPromptsByRunId((current) => ({
+        ...current,
+        [run.runId]: trimmedPrompt,
+      }));
       setPrompt("");
       setRunConfigDraft(cloneRunConfig(config));
       setSelectedRunId(run.runId);
@@ -808,11 +814,21 @@ export const TopicPage = () => {
   const openClassicTraceView = () => {
     const params = new URLSearchParams(searchParams);
     params.set("view", "classic");
+    params.set("tab", "trace");
     if (selectedRunId) {
       params.set("runId", selectedRunId);
     }
     setSearchParams(params);
-    setClassicPrimaryTab("trace");
+  };
+
+  const setClassicTab = (nextTab: ClassicPrimaryTab) => {
+    const params = new URLSearchParams(searchParams);
+    params.set("view", "classic");
+    params.set("tab", nextTab);
+    if (selectedRunId) {
+      params.set("runId", selectedRunId);
+    }
+    setSearchParams(params);
   };
 
   const openArtifactPreview = async (artifact: Artifact) => {
@@ -848,21 +864,6 @@ export const TopicPage = () => {
       URL.revokeObjectURL(objectUrl);
     } catch (downloadError) {
       setError(getErrorMessage(downloadError));
-    }
-  };
-
-  const copyCommand = async (key: string, command: string) => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopiedCommandKey(key);
-      if (copiedCommandTimerRef.current !== null) {
-        window.clearTimeout(copiedCommandTimerRef.current);
-      }
-      copiedCommandTimerRef.current = window.setTimeout(() => {
-        setCopiedCommandKey(null);
-      }, 1200);
-    } catch (copyError) {
-      setError(getErrorMessage(copyError));
     }
   };
 
@@ -902,6 +903,7 @@ export const TopicPage = () => {
       ? (runDetail.awaitingModule as AgentId)
       : null;
   const topicPrompt = topic?.objective?.trim() || topic?.description?.trim() || prompt.trim();
+  const streamTaskPrompt = (selectedRunId ? submittedPromptsByRunId[selectedRunId] : "") || topicPrompt;
 
   const drawerContent = (
     <>
@@ -1035,6 +1037,10 @@ export const TopicPage = () => {
                     <strong>{configForContext.thinkingMode}</strong>
                   </div>
                   <div>
+                    <span className="muted">selected agents</span>
+                    <strong>{(configForContext.selectedAgents ?? []).join(", ") || "-"}</strong>
+                  </div>
+                  <div>
                     <span className="muted">network</span>
                     <strong>{configForContext.online ? "online" : "offline"}</strong>
                   </div>
@@ -1052,6 +1058,7 @@ export const TopicPage = () => {
                         <p>enabled: {moduleConfig.enabled ? "true" : "false"}</p>
                         <p>model: {moduleConfig.model}</p>
                         <p>requireHuman: {moduleConfig.requireHuman ? "true" : "false"}</p>
+                        {moduleConfig.idea_taste_mode ? <p>idea_taste_mode: {moduleConfig.idea_taste_mode}</p> : null}
                       </div>
                     );
                   })}
@@ -1064,22 +1071,6 @@ export const TopicPage = () => {
         </section>
       ) : null}
 
-      {activeTab === "cli" ? (
-        <section className="workflow-cli-panel">
-          {cliCommands.map((item) => (
-            <article key={item.key} className="workflow-cli-item">
-              <header>
-                <h4>{item.label}</h4>
-                <button type="button" onClick={() => void copyCommand(item.key, item.command)}>
-                  {copiedCommandKey === item.key ? "Copied" : "Copy"}
-                </button>
-              </header>
-              <pre>{item.command}</pre>
-            </article>
-          ))}
-          <p className="muted">If needed, replace token value with your own Bearer token.</p>
-        </section>
-      ) : null}
     </>
   );
 
@@ -1094,7 +1085,9 @@ export const TopicPage = () => {
             <h2>{headerTitle}</h2>
             <div className="topic-topbar-statusline">
               <span>status: {topic?.status ?? fallbackTopic?.status ?? "unknown"}</span>
-              <span className={`ws-state ws-${wsStatus}`}>WS: {wsStatus}</span>
+              <span className={`ws-state ws-${wsStatus} ${wsStatusTransitioning ? "ws-state-transition" : ""}`}>
+                WS: {wsStatusLabel}
+              </span>
               {selectedRunId ? <span>run: {selectedRunId}</span> : null}
               <span className={`status-badge ${toRunStatusClass(runStatus)}`}>{runStatus}</span>
             </div>
@@ -1115,15 +1108,22 @@ export const TopicPage = () => {
           <div className="topic-view-tabs-left">
             <button
               type="button"
+              className={classicPrimaryTab === "chat" ? "active" : ""}
+              onClick={() => setClassicTab("chat")}
+            >
+              Chat
+            </button>
+            <button
+              type="button"
               className={classicPrimaryTab === "pipeline" ? "active" : ""}
-              onClick={() => setClassicPrimaryTab("pipeline")}
+              onClick={() => setClassicTab("pipeline")}
             >
               Pipeline
             </button>
             <button
               type="button"
               className={classicPrimaryTab === "trace" ? "active" : ""}
-              onClick={() => setClassicPrimaryTab("trace")}
+              onClick={() => setClassicTab("trace")}
             >
               Trace
             </button>
@@ -1157,12 +1157,42 @@ export const TopicPage = () => {
           </section>
         ) : null}
 
-        {classicPrimaryTab === "pipeline" ? (
+        {classicPrimaryTab === "chat" ? (
+          <section className="workflow-feed workflow-feed-chat">
+            <header className="workflow-feed-header">
+              <div>
+                <h3>Run Chat</h3>
+                <p>Task prompt and system progress in one conversation stream</p>
+              </div>
+              <div className="workflow-feed-actions">
+                <button type="button" onClick={() => openDrawer("artifacts")}>Artifacts</button>
+                <button type="button" onClick={() => openDrawer("context")}>Context</button>
+              </div>
+            </header>
+
+            <div className="workflow-feed-list">
+              <RunMessageStream
+                taskPrompt={streamTaskPrompt}
+                events={logSourceEvents}
+                awaitingModule={awaitingModule}
+                approvalSummary={approvalSummary}
+                approvalNote={approvalNote}
+                approving={approving}
+                runError={runError}
+                runStatus={runStatus}
+                onApprovalNoteChange={setApprovalNote}
+                onApprove={(approved) => void handleApproveRun(approved)}
+                onOpenArtifact={(artifact) => void openArtifactPreview(artifact)}
+              />
+            </div>
+          </section>
+        ) : classicPrimaryTab === "pipeline" ? (
           <div className="topic-workspace">
             <section className="topic-flow-panel">
               <FlowCanvas
                 agentsStatus={agentsStatus}
                 agentSubtasks={agentSubtasks}
+                enabledAgents={pipelineAgents}
                 onSelectAgent={handleSelectAgent}
               />
             </section>
@@ -1177,6 +1207,7 @@ export const TopicPage = () => {
               artifacts={runArtifacts}
               loading={loadingTrace}
               error={traceError}
+              runStatus={runStatus}
             />
           </section>
         )}
@@ -1274,102 +1305,23 @@ export const TopicPage = () => {
               <div className="workflow-feed-actions">
                 <button type="button" onClick={() => openDrawer("artifacts")}>Artifacts</button>
                 <button type="button" onClick={() => openDrawer("context")}>Context</button>
-                <button type="button" onClick={() => openDrawer("cli")}>CLI</button>
               </div>
             </header>
 
             <div className="workflow-feed-list">
-              {feedEvents.length === 0 ? <p className="muted">No events yet. Start a run to see progress.</p> : null}
-              {(approvalSummary || (runDetail?.awaitingApproval && awaitingModule)) ? (
-                <article className="workflow-feed-card workflow-feed-card-approval">
-                  <header>
-                    <div className="workflow-feed-meta">
-                      <span className="event-badge">approval</span>
-                      {awaitingModule ? <span className="event-badge">{awaitingModule}</span> : null}
-                    </div>
-                    <span className="event-badge event-badge-severity severity-warn">action_required</span>
-                  </header>
-                  <h3>Approval Required</h3>
-                  <p className="workflow-feed-summary">{approvalSummary ?? "This module is waiting for manual approval."}</p>
-                  <textarea
-                    value={approvalNote}
-                    onChange={(event) => setApprovalNote(event.target.value)}
-                    placeholder="Optional note"
-                    rows={2}
-                    disabled={approving}
-                  />
-                  <div className="workflow-approval-actions">
-                    <button type="button" disabled={approving} onClick={() => void handleApproveRun(true)}>
-                      {approving ? "Submitting..." : "Approve"}
-                    </button>
-                    <button
-                      type="button"
-                      className="danger-button"
-                      disabled={approving}
-                      onClick={() => void handleApproveRun(false)}
-                    >
-                      {approving ? "Submitting..." : "Reject"}
-                    </button>
-                  </div>
-                  {runError ? <p className="form-error">{runError}</p> : null}
-                </article>
-              ) : null}
-
-              {runArtifacts.length > 0 ? (
-                <article className="workflow-feed-card workflow-feed-card-artifacts">
-                  <header>
-                    <div className="workflow-feed-meta">
-                      <span className="event-badge">artifacts</span>
-                    </div>
-                    <span className="event-badge">{runArtifacts.length}</span>
-                  </header>
-                  <p className="workflow-feed-summary">Generated outputs for the current run.</p>
-                  <div className="workflow-feed-artifacts">
-                    {runArtifacts.map((artifact) => (
-                      <button
-                        key={artifact.artifactId}
-                        type="button"
-                        className="workflow-artifact-button"
-                        onClick={() => void openArtifactPreview(artifact)}
-                      >
-                        {artifact.name}
-                      </button>
-                    ))}
-                  </div>
-                </article>
-              ) : null}
-
-              {feedEvents.map((event) => (
-                <article
-                  key={event.eventId}
-                  className={`workflow-feed-card event-${event.severity} ${MODULE_EVENT_KINDS.has(event.kind) ? "workflow-feed-card-module" : ""}`}
-                >
-                  <header>
-                    <div className="workflow-feed-meta">
-                      <span className="event-time">{formatEventTime(event.ts)}</span>
-                      <span className="event-badge">{event.agentId}</span>
-                      <span className="event-badge event-badge-kind">{event.kind}</span>
-                    </div>
-                    <span className={`event-badge event-badge-severity severity-${event.severity}`}>{event.severity}</span>
-                  </header>
-                  <p className="workflow-feed-summary">{event.summary}</p>
-
-                  {event.kind === "artifact_created" && Array.isArray(event.artifacts) && event.artifacts.length > 0 ? (
-                    <div className="workflow-feed-artifacts">
-                      {event.artifacts.map((artifact) => (
-                        <button
-                          key={artifact.artifactId}
-                          type="button"
-                          className="workflow-artifact-button"
-                          onClick={() => void openArtifactPreview(artifact)}
-                        >
-                          {artifact.name}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </article>
-              ))}
+              <RunMessageStream
+                taskPrompt={streamTaskPrompt}
+                events={logSourceEvents}
+                awaitingModule={awaitingModule}
+                approvalSummary={approvalSummary}
+                approvalNote={approvalNote}
+                approving={approving}
+                runError={runError}
+                runStatus={runStatus}
+                onApprovalNoteChange={setApprovalNote}
+                onApprove={(approved) => void handleApproveRun(approved)}
+                onOpenArtifact={(artifact) => void openArtifactPreview(artifact)}
+              />
             </div>
           </section>
         </div>
