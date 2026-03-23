@@ -1,5 +1,6 @@
-import { IDEA_TASTE_OPTIONS, type IdeaTasteMode } from "../../lib/ideaPreference";
+﻿import { IDEA_TASTE_OPTIONS, type IdeaTasteMode } from "../../lib/ideaPreference";
 import { AGENT_IDS, type AgentId, type RunConfig } from "../../types/events";
+import { APP_COPY, formatAgentLabel } from "../../lib/copy";
 
 export const RUN_MODEL_OPTIONS = ["deepseek-chat", "deepseek-reasoner", "gpt-4.1"] as const;
 
@@ -20,13 +21,6 @@ interface RunConfigBarProps {
   onIdeaTasteModeChange?: (value: IdeaTasteMode) => void;
 }
 
-const formatAgentLabel = (agentId: AgentId): string => {
-  if (agentId === "ideation") {
-    return "Idea";
-  }
-  return agentId.charAt(0).toUpperCase() + agentId.slice(1);
-};
-
 export const RunConfigBar = ({
   config,
   loading,
@@ -40,15 +34,15 @@ export const RunConfigBar = ({
   showIdeaPreference = false,
   ideaPreferenceEnabled = true,
   ideaTasteMode,
-  ideaPreferenceHint = "仅对 Idea 生效",
+  ideaPreferenceHint = "仅对 idea 生效",
   onIdeaTasteModeChange,
 }: RunConfigBarProps) => {
   if (loading) {
-    return <section className="run-config-bar muted">Loading default config...</section>;
+    return <section className="run-config-bar muted">{APP_COPY.runConfig.loadingDefault}</section>;
   }
 
   if (!config) {
-    return <section className="run-config-bar muted">Config unavailable</section>;
+    return <section className="run-config-bar muted">{APP_COPY.runConfig.unavailable}</section>;
   }
 
   const activeAgent = currentAgent ?? "review";
@@ -59,13 +53,13 @@ export const RunConfigBar = ({
   return (
     <section className="run-config-bar">
       <div className="run-config-head">
-        <h3>Run Config</h3>
+        <h3>{APP_COPY.runConfig.title}</h3>
         <p className="muted">
           {singleAgentMode
-            ? `Editing the launcher draft for ${agentTitle}. Only this agent will be enabled when the run starts.`
+            ? APP_COPY.runConfig.singleAgentHint(agentTitle)
             : lockModuleEnabled
-              ? "Agent chips on the launcher control which module is enabled for this run."
-              : "Toggle modules and model routing before launch."}
+              ? APP_COPY.runConfig.lockedModulesHint
+              : APP_COPY.runConfig.multiAgentHint}
         </p>
       </div>
 
@@ -77,11 +71,11 @@ export const RunConfigBar = ({
               checked={config.online}
               onChange={(event) => onChange({ ...config, online: event.target.checked })}
             />
-            <span>Online</span>
+            <span>{APP_COPY.runConfig.online}</span>
           </label>
           {showIdeaPreference ? (
             <label className={`run-config-pill run-config-idea-preference ${ideaPreferenceEnabled ? "" : "disabled"}`}>
-              <span>Idea Preference</span>
+              <span>{APP_COPY.runConfig.ideaPreference}</span>
               <select
                 value={ideaTasteMode ?? IDEA_TASTE_OPTIONS[0].value}
                 onChange={(event) => onIdeaTasteModeChange?.(event.target.value as IdeaTasteMode)}
@@ -99,7 +93,7 @@ export const RunConfigBar = ({
         </div>
 
         <button type="button" className="run-config-reset" onClick={onReset}>
-          Restore Default
+          {APP_COPY.runConfig.restoreDefault}
         </button>
       </div>
 
@@ -109,13 +103,13 @@ export const RunConfigBar = ({
             <h4>{agentTitle}</h4>
             <label className="run-config-toggle">
               <input type="checkbox" checked={activeModuleConfig.enabled} disabled />
-              <span>Enabled</span>
+              <span>{APP_COPY.runConfig.enabled}</span>
             </label>
           </header>
 
           <div className="run-config-focus-fields">
             <label>
-              Model
+              {APP_COPY.runConfig.model}
               <select
                 value={activeModuleConfig.model}
                 onChange={(event) =>
@@ -148,7 +142,7 @@ export const RunConfigBar = ({
                 checked={config.online}
                 onChange={(event) => onChange({ ...config, online: event.target.checked })}
               />
-              <span>Online</span>
+              <span>{APP_COPY.runConfig.online}</span>
             </label>
 
             <label className="run-config-toggle run-config-inline-toggle">
@@ -168,7 +162,7 @@ export const RunConfigBar = ({
                   })
                 }
               />
-              <span>Require Human</span>
+              <span>{APP_COPY.runConfig.requireHuman}</span>
             </label>
           </div>
         </article>
@@ -198,12 +192,12 @@ export const RunConfigBar = ({
                         })
                       }
                     />
-                    <span>Enabled</span>
+                    <span>{APP_COPY.runConfig.enabled}</span>
                   </label>
                 </header>
 
                 <label>
-                  Model
+                  {APP_COPY.runConfig.model}
                   <select
                     value={moduleConfig.model}
                     onChange={(event) =>
@@ -247,7 +241,7 @@ export const RunConfigBar = ({
                       })
                     }
                   />
-                  <span>Require Human</span>
+                  <span>{APP_COPY.runConfig.requireHuman}</span>
                 </label>
               </article>
             );

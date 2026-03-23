@@ -1,4 +1,4 @@
-"""Initial schema for SciAgentDemo
+"""Initial schema for xcientist
 
 Revision ID: 20260227_0001
 Revises:
@@ -166,4 +166,3 @@ def downgrade() -> None:
     op.drop_index("ix_topics_name", table_name="topics")
     op.drop_index("ix_topics_id", table_name="topics")
     op.drop_table("topics")
-

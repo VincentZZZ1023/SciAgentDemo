@@ -1,16 +1,41 @@
+﻿import { motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { createTopic, getDefaultRunConfig, getRun, getTopics, startRun } from "../api/client";
+import { approveRun, createTopic, getDefaultRunConfig, getRun, getSnapshot, getTopics, startRun } from "../api/client";
+import { connectTopicWs, type TopicWsConnection } from "../api/ws";
 import { useAuth } from "../auth/AuthContext";
+import { BrandWordmark } from "../components/brand";
 import { ScholarSidebar, type SidebarRunHistoryItem } from "../components/sidebar/ScholarSidebar";
 import { ScholarSearchBox, type ScholarMode } from "../components/search/ScholarSearchBox";
 import { RunConfigBar, RUN_MODEL_OPTIONS } from "../components/run/RunConfigBar";
+import { RunMessageStream } from "../components/workflow/RunMessageStream";
 import { DEFAULT_IDEA_TASTE_MODE, type IdeaTasteMode } from "../lib/ideaPreference";
+import { APP_COPY } from "../lib/copy";
 import { cloneRunConfig, getRunConfigIdeaTasteMode, runConfigToMode, sanitizeRunConfig } from "../lib/runConfig";
-import type { AgentId, RunConfig, RunDetail, TopicSummary } from "../types/events";
+import { useSidebarCollapse } from "../lib/useSidebarCollapse";
+import { AGENT_IDS, type AgentId, type Event, type RunConfig, type RunDetail, type TopicSummary } from "../types/events";
 
 type LauncherAgent = "review" | "idea" | "experiment";
-const LAST_SELECTED_RUN_KEY = "sciagent_last_selected_run";
+type HomeSessionMode = "new" | "history";
+const HISTORY_EVENT_LIMIT = 400;
+const HISTORY_TITLE_MAX_LENGTH = 20;
+const HOME_FADE_EASE: [number, number, number, number] = [0.22, 1, 0.36, 1];
+
+interface HomeConversationRun {
+  topicId: string;
+  runId: string;
+  prompt: string;
+  events: Event[];
+  runDetail: RunDetail | null;
+  createdAt: number;
+}
+
+interface PendingHomeLaunch {
+  threadId: string | null;
+  runId: string;
+  prompt: string;
+  createdAt: number;
+}
 
 const FRONTEND_FALLBACK_CONFIG: RunConfig = {
   thinkingMode: "quick",
@@ -37,10 +62,109 @@ const FRONTEND_FALLBACK_CONFIG: RunConfig = {
   },
 };
 
+const normalizeHistoryRunEvents = (events: Event[], runId: string): Event[] => {
+  return [...events]
+    .filter((event) => event.runId === runId)
+    .sort((left, right) => (left.ts === right.ts ? left.eventId.localeCompare(right.eventId) : left.ts - right.ts));
+};
+
+const toHistoryPrompt = (topic: TopicSummary & { description?: string; objective?: string }, fallback: string): string => {
+  const prompt = topic.description?.trim() || topic.objective?.trim();
+  return prompt || fallback;
+};
+
+const modulesToLauncherAgents = (config: RunConfig): LauncherAgent[] => {
+  const next: LauncherAgent[] = [];
+  if (config.modules.review.enabled) {
+    next.push("review");
+  }
+  if (config.modules.ideation.enabled) {
+    next.push("idea");
+  }
+  if (config.modules.experiment.enabled) {
+    next.push("experiment");
+  }
+  return next;
+};
+
+const toHistoryFallbackTitle = (value: string | null | undefined): string => {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return APP_COPY.home.runThreadTitleFallback;
+  }
+
+  const clipped = normalized.slice(0, HISTORY_TITLE_MAX_LENGTH).trim();
+  return clipped || APP_COPY.home.runThreadTitleFallback;
+};
+
+const resolveHistoryTitle = (
+  topic: Pick<TopicSummary, "topicId" | "title" | "historyTitle">,
+  run?: Pick<RunDetail, "historyTitle"> | null,
+): string => {
+  const runTitle = typeof run?.historyTitle === "string" ? run.historyTitle.trim() : "";
+  if (runTitle) {
+    return runTitle;
+  }
+
+  const topicTitle = typeof topic.historyTitle === "string" ? topic.historyTitle.trim() : "";
+  if (topicTitle) {
+    return topicTitle;
+  }
+
+  return toHistoryFallbackTitle(topic.title || topic.topicId);
+};
+
+const toAwaitingModule = (runDetail: RunDetail | null): AgentId | null => {
+  if (!runDetail?.awaitingModule) {
+    return null;
+  }
+  return AGENT_IDS.includes(runDetail.awaitingModule as AgentId) ? (runDetail.awaitingModule as AgentId) : null;
+};
+
+const upsertConversationRun = (
+  current: HomeConversationRun[],
+  nextRun: HomeConversationRun,
+  mode: "reset" | "append-or-replace",
+): HomeConversationRun[] => {
+  if (mode === "reset") {
+    return [nextRun];
+  }
+
+  const existingIndex = current.findIndex((item) => item.runId === nextRun.runId);
+  if (existingIndex >= 0) {
+    return sortConversationRuns(current.map((item, index) => (index === existingIndex ? nextRun : item)));
+  }
+
+  return sortConversationRuns([...current, nextRun]);
+};
+
+const upsertRunEvent = (current: Event[], incoming: Event): Event[] => {
+  const duplicateIndex = current.findIndex((event) => event.eventId === incoming.eventId);
+  const base = duplicateIndex >= 0 ? [...current.slice(0, duplicateIndex), ...current.slice(duplicateIndex + 1)] : current;
+  return [...base, incoming].sort((left, right) =>
+    left.ts === right.ts ? left.eventId.localeCompare(right.eventId) : left.ts - right.ts,
+  );
+};
+
+const sortConversationRuns = (runs: HomeConversationRun[]): HomeConversationRun[] => {
+  return [...runs].sort((left, right) => {
+    const leftTs = left.createdAt || left.runDetail?.createdAt || left.events[0]?.ts || 0;
+    const rightTs = right.createdAt || right.runDetail?.createdAt || right.events[0]?.ts || 0;
+    if (leftTs !== rightTs) {
+      return leftTs - rightTs;
+    }
+    return left.runId.localeCompare(right.runId);
+  });
+};
+
 export const ScholarSearchHome = () => {
   const navigate = useNavigate();
   const { user, logout, switchAccount } = useAuth();
+  const { collapsed, toggleCollapsed } = useSidebarCollapse();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const conversationRequestRef = useRef(0);
+  const topicWsRef = useRef<TopicWsConnection | null>(null);
+  const runPromptsByIdRef = useRef<Record<string, string>>({});
   const [query, setQuery] = useState("");
   const [thinkingMode, setThinkingMode] = useState<ScholarMode>("quick");
   const [ideaTasteMode, setIdeaTasteMode] = useState<IdeaTasteMode>(DEFAULT_IDEA_TASTE_MODE);
@@ -53,12 +177,17 @@ export const ScholarSearchHome = () => {
   const [defaultConfig, setDefaultConfig] = useState<RunConfig | null>(null);
   const [runConfigDraft, setRunConfigDraft] = useState<RunConfig | null>(null);
   const [historyItems, setHistoryItems] = useState<SidebarRunHistoryItem[]>([]);
-  const [activeHistoryKey, setActiveHistoryKey] = useState<string | null>(() => {
-    if (typeof window === "undefined") {
-      return null;
-    }
-    return window.sessionStorage.getItem(LAST_SELECTED_RUN_KEY);
-  });
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [conversationThreadId, setConversationThreadId] = useState<string | null>(null);
+  const [conversationTitle, setConversationTitle] = useState("");
+  const [conversationRuns, setConversationRuns] = useState<HomeConversationRun[]>([]);
+  const [loadingConversation, setLoadingConversation] = useState(false);
+  const [conversationLoadError, setConversationLoadError] = useState("");
+  const [runPromptsById, setRunPromptsById] = useState<Record<string, string>>({});
+  const [pendingHomeLaunch, setPendingHomeLaunch] = useState<PendingHomeLaunch | null>(null);
+  const [homeApprovalNote, setHomeApprovalNote] = useState("");
+  const [homeApproving, setHomeApproving] = useState(false);
+  const [homeRunError, setHomeRunError] = useState("");
 
   const toRunStatusBadge = (status: string | undefined): SidebarRunHistoryItem["status"] => {
     if (status === "paused") {
@@ -72,35 +201,43 @@ export const ScholarSearchHome = () => {
 
   const formatUpdatedAtLabel = (updatedAt: number): string => {
     if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
-      return "Updated recently";
+      return APP_COPY.home.updatedRecently;
     }
     return new Date(updatedAt).toLocaleString();
   };
 
   const buildHistorySummary = (topic: TopicSummary, run: RunDetail | null): string => {
-    const runLabel = run?.runId ? `run ${run.runId.slice(-8)}` : "topic workspace";
+    const runLabel = run?.runId ?? topic.lastRunId;
+    const runText = runLabel ? `${APP_COPY.home.runPrefix} ${runLabel.slice(-8)}` : APP_COPY.home.runPending;
     const moduleLabel = run?.currentModule ? ` | ${run.currentModule}` : "";
-    return `${runLabel}${moduleLabel}`;
+    return `${runText}${moduleLabel}`;
   };
 
-  const buildRunHref = (item: { topicId: string; runId?: string | null }): string => {
+  const mergeHistoryItems = (
+    incoming: SidebarRunHistoryItem[],
+    existing: SidebarRunHistoryItem[],
+  ): SidebarRunHistoryItem[] => {
+    const merged = [...incoming];
+    existing.forEach((item) => {
+      if (!item.runId || merged.some((candidate) => candidate.runId === item.runId)) {
+        return;
+      }
+      merged.unshift(item);
+    });
+    return merged.slice(0, 20);
+  };
+
+  const buildRunsHref = (item?: { topicId?: string; runId?: string | null }): string => {
+    if (!item?.topicId) {
+      return "/runs";
+    }
     const params = new URLSearchParams();
     params.set("view", "classic");
     if (item.runId) {
       params.set("runId", item.runId);
     }
     const nextQuery = params.toString();
-    return nextQuery ? `/app/${encodeURIComponent(item.topicId)}?${nextQuery}` : `/app/${encodeURIComponent(item.topicId)}`;
-  };
-
-  const buildHistoryKey = (item: { topicId: string; runId?: string | null }): string => `${item.topicId}:${item.runId ?? "topic"}`;
-
-  const rememberHistorySelection = (item: { topicId: string; runId?: string | null }) => {
-    const nextKey = buildHistoryKey(item);
-    setActiveHistoryKey(nextKey);
-    if (typeof window !== "undefined") {
-      window.sessionStorage.setItem(LAST_SELECTED_RUN_KEY, nextKey);
-    }
+    return nextQuery ? `/runs/${encodeURIComponent(item.topicId)}?${nextQuery}` : `/runs/${encodeURIComponent(item.topicId)}`;
   };
 
   const launcherAgentToModule = (agent: LauncherAgent): AgentId => {
@@ -151,6 +288,7 @@ export const ScholarSearchHome = () => {
           setRunConfigDraft(cloneRunConfig(config));
           setThinkingMode(runConfigToMode(config));
           setIdeaTasteMode(getRunConfigIdeaTasteMode(config));
+          setSelectedAgents(modulesToLauncherAgents(config));
         }
       } catch {
         if (!cancelled) {
@@ -158,6 +296,7 @@ export const ScholarSearchHome = () => {
           setRunConfigDraft(cloneRunConfig(FRONTEND_FALLBACK_CONFIG));
           setThinkingMode(runConfigToMode(FRONTEND_FALLBACK_CONFIG));
           setIdeaTasteMode(getRunConfigIdeaTasteMode(FRONTEND_FALLBACK_CONFIG));
+          setSelectedAgents(modulesToLauncherAgents(FRONTEND_FALLBACK_CONFIG));
         }
       } finally {
         if (!cancelled) {
@@ -182,6 +321,7 @@ export const ScholarSearchHome = () => {
         const topics = await getTopics();
         const orderedTopics = [...topics]
           .sort((left, right) => right.updatedAt - left.updatedAt)
+          .filter((topic) => Boolean(topic.lastRunId))
           .slice(0, 20);
 
         const runDetails = await Promise.all(
@@ -203,17 +343,18 @@ export const ScholarSearchHome = () => {
 
         const nextHistory = orderedTopics.map((topic, index) => {
           const runDetail = runDetails[index];
+          const runId = runDetail?.runId ?? topic.lastRunId ?? null;
           return {
             topicId: topic.topicId,
-            runId: runDetail?.runId ?? topic.lastRunId ?? null,
-            title: topic.title || topic.topicId,
+            runId,
+            title: resolveHistoryTitle(topic, runDetail),
             summary: buildHistorySummary(topic, runDetail),
-            status: toRunStatusBadge(runDetail?.status ?? topic.status),
+            status: toRunStatusBadge(runDetail?.status),
             updatedAtLabel: formatUpdatedAtLabel(topic.updatedAt),
           } satisfies SidebarRunHistoryItem;
         });
 
-        setHistoryItems(nextHistory);
+        setHistoryItems((current) => mergeHistoryItems(nextHistory, current));
       } catch {
         if (!cancelled) {
           setHistoryItems([]);
@@ -239,7 +380,7 @@ export const ScholarSearchHome = () => {
   const toTopicName = (value: string): string => {
     const trimmed = value.trim();
     if (!trimmed) {
-      return "New Run";
+      return APP_COPY.home.newRunFallbackTitle;
     }
     return trimmed.slice(0, 64);
   };
@@ -248,7 +389,169 @@ export const ScholarSearchHome = () => {
     if (input instanceof Error) {
       return input.message;
     }
-    return "Failed to create run.";
+    return APP_COPY.home.createRunError;
+  };
+
+  const toPromptSummary = (value: string): string => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return APP_COPY.home.newRunFallbackSummary;
+    }
+    const normalized = trimmed.replace(/\s+/g, " ");
+    return normalized.length > 120 ? `${normalized.slice(0, 117)}...` : normalized;
+  };
+
+  const upsertHistoryItem = (
+    current: SidebarRunHistoryItem[],
+    nextItem: SidebarRunHistoryItem,
+  ): SidebarRunHistoryItem[] => {
+    const deduped = current.filter((item) => item.topicId !== nextItem.topicId);
+    return [nextItem, ...deduped].slice(0, 20);
+  };
+
+  useEffect(() => {
+    runPromptsByIdRef.current = runPromptsById;
+  }, [runPromptsById]);
+
+  const buildConversationRunsFromSnapshot = (options: {
+    topicId: string;
+    title: string;
+    selectedRunId: string;
+    snapshot: Awaited<ReturnType<typeof getSnapshot>>;
+    promptFallback?: string;
+    existingRuns?: HomeConversationRun[];
+    selectedRunDetail?: RunDetail | null;
+  }): HomeConversationRun[] => {
+    const { topicId, title, selectedRunId, snapshot, promptFallback, existingRuns = [], selectedRunDetail } = options;
+    const snapshotEvents = snapshot.events ?? [];
+    const orderedEvents = [...snapshotEvents].sort((left, right) =>
+      left.ts === right.ts ? left.eventId.localeCompare(right.eventId) : left.ts - right.ts,
+    );
+    const existingRunsById = new Map(existingRuns.map((run) => [run.runId, run]));
+    const runIds = Array.from(new Set(orderedEvents.map((event) => event.runId).filter(Boolean)));
+
+    if (snapshot.activeRun?.runId && !runIds.includes(snapshot.activeRun.runId)) {
+      runIds.push(snapshot.activeRun.runId);
+    }
+    if (selectedRunId && !runIds.includes(selectedRunId)) {
+      runIds.push(selectedRunId);
+    }
+
+    const runs = runIds.map((runId, index) => {
+      const existingRun = existingRunsById.get(runId);
+      const runDetail =
+        runId === selectedRunId
+          ? selectedRunDetail ?? existingRun?.runDetail ?? (snapshot.activeRun?.runId === runId ? snapshot.activeRun : null)
+          : existingRun?.runDetail ?? (snapshot.activeRun?.runId === runId ? snapshot.activeRun : null);
+      const prompt =
+        runPromptsByIdRef.current[runId] ||
+        existingRun?.prompt ||
+        (runId === selectedRunId ? promptFallback || toHistoryPrompt(snapshot.topic, title) : APP_COPY.home.followUpRequest);
+      const eventsForRun = normalizeHistoryRunEvents(orderedEvents, runId);
+      const createdAt = existingRun?.createdAt || runDetail?.createdAt || eventsForRun[0]?.ts || snapshot.topic.updatedAt + index;
+
+      return {
+        topicId,
+        runId,
+        prompt,
+        events: eventsForRun,
+        runDetail,
+        createdAt,
+      } satisfies HomeConversationRun;
+    });
+
+    return sortConversationRuns(runs);
+  };
+
+  const syncConversationThread = async (options: {
+    topicId: string;
+    runId: string;
+    title: string;
+    promptFallback?: string;
+    mode: "reset" | "append-or-replace";
+    showLoader?: boolean;
+  }) => {
+    const requestId = ++conversationRequestRef.current;
+    const { topicId, runId, title, promptFallback, mode, showLoader = false } = options;
+
+    if (showLoader) {
+      setLoadingConversation(true);
+      setConversationLoadError("");
+      if (mode === "reset") {
+        setConversationRuns([]);
+      }
+    }
+
+    try {
+      const [snapshot, runDetail] = await Promise.all([getSnapshot(topicId, HISTORY_EVENT_LIMIT), getRun(runId).catch(() => null)]);
+
+      if (conversationRequestRef.current !== requestId) {
+        return;
+      }
+
+      const fallbackRunDetail = snapshot.activeRun && snapshot.activeRun.runId === runId ? snapshot.activeRun : null;
+      const nextRunDetail = runDetail ?? fallbackRunDetail;
+      const nextPrompt = promptFallback || runPromptsByIdRef.current[runId] || toHistoryPrompt(snapshot.topic, title);
+      const nextDisplayTitle = resolveHistoryTitle(snapshot.topic, nextRunDetail);
+
+      setConversationThreadId(topicId);
+      setConversationTitle(nextDisplayTitle);
+      setActiveRunId(runId);
+      setConversationRuns((current) =>
+        buildConversationRunsFromSnapshot({
+          topicId,
+          title: nextDisplayTitle,
+          selectedRunId: runId,
+          snapshot,
+          promptFallback: nextPrompt,
+          existingRuns: mode === "reset" ? [] : current.filter((item) => item.topicId === topicId),
+          selectedRunDetail: nextRunDetail,
+        }),
+      );
+      setRunPromptsById((current) => ({ ...current, [runId]: nextPrompt }));
+      setHistoryItems((current) =>
+        upsertHistoryItem(current, {
+          topicId,
+          runId,
+          title: nextDisplayTitle,
+          summary: buildHistorySummary(snapshot.topic, nextRunDetail),
+          status: toRunStatusBadge(nextRunDetail?.status),
+          updatedAtLabel: formatUpdatedAtLabel(snapshot.topic.updatedAt),
+        }),
+      );
+
+      if (nextRunDetail) {
+        setHistoryItems((current) =>
+          current.map((item) =>
+            item.topicId === topicId
+              ? {
+                  ...item,
+                  runId,
+                  title: nextDisplayTitle,
+                  status: toRunStatusBadge(nextRunDetail.status),
+                }
+              : item,
+          ),
+        );
+      }
+
+      if (showLoader) {
+        setConversationLoadError("");
+      }
+    } catch (loadError) {
+      if (conversationRequestRef.current !== requestId) {
+        return;
+      }
+
+      if (mode === "reset") {
+        setConversationRuns([]);
+      }
+      setConversationLoadError(getErrorMessage(loadError));
+    } finally {
+      if (showLoader && conversationRequestRef.current === requestId) {
+        setLoadingConversation(false);
+      }
+    }
   };
 
   const primarySelectedAgent = selectedAgents[0] ?? "review";
@@ -269,16 +572,86 @@ export const ScholarSearchHome = () => {
     return applyLauncherStateToConfig(runConfigDraft, selectedAgents, thinkingMode, ideaTasteMode);
   }, [ideaTasteMode, runConfigDraft, selectedAgents, thinkingMode]);
 
-  const canSubmit = query.trim().length > 0 && selectedAgents.length > 0;
+  const sessionMode: HomeSessionMode = activeRunId ? "history" : "new";
+  const activeThreadItem = useMemo(() => {
+    if (!conversationThreadId) {
+      return null;
+    }
+    return historyItems.find((item) => item.topicId === conversationThreadId) ?? null;
+  }, [conversationThreadId, historyItems]);
+  const activeConversationRun = useMemo(() => {
+    if (!activeRunId) {
+      return conversationRuns[conversationRuns.length - 1] ?? null;
+    }
+    return conversationRuns.find((item) => item.runId === activeRunId) ?? conversationRuns[conversationRuns.length - 1] ?? null;
+  }, [activeRunId, conversationRuns]);
+  const activeAwaitingModule = useMemo(
+    () => toAwaitingModule(activeConversationRun?.runDetail ?? null),
+    [activeConversationRun],
+  );
+  const activeApprovalSummary = useMemo(() => {
+    if (!activeConversationRun?.runDetail?.awaitingApproval || !activeAwaitingModule) {
+      return null;
+    }
+    return APP_COPY.home.approvalWaiting(activeAwaitingModule);
+  }, [activeAwaitingModule, activeConversationRun]);
+  const activeRunStatus = activeConversationRun?.runDetail?.status ?? "idle";
+  const isNewChat = sessionMode === "new";
+  const inputPlaceholder =
+    sessionMode === "history"
+      ? APP_COPY.home.continuePlaceholder
+      : APP_COPY.home.newChatPlaceholder;
+  const canSubmit = selectedAgents.length > 0 && (isNewChat ? query.trim().length > 0 : true);
+  const homeConversationSegments = useMemo(
+    () =>
+      conversationRuns.map((conversationRun) => ({
+        threadId: conversationThreadId ?? conversationRun.topicId,
+        sourceRunId: conversationRun.runId,
+        prompt: conversationRun.prompt,
+        promptTs: conversationRun.createdAt,
+        events: conversationRun.events,
+        runStatus:
+          conversationRun.runDetail?.status ?? (conversationRun.runId === activeRunId ? activeRunStatus : "completed"),
+        awaitingModule: conversationRun.runId === activeRunId ? activeAwaitingModule : null,
+        approvalSummary: conversationRun.runId === activeRunId ? activeApprovalSummary : null,
+      })),
+    [activeApprovalSummary, activeAwaitingModule, activeRunId, activeRunStatus, conversationRuns, conversationThreadId],
+  );
+
+  const homeDisplaySegments = useMemo(() => {
+    if (!pendingHomeLaunch) {
+      return homeConversationSegments;
+    }
+
+    const pendingSegment = {
+      threadId: pendingHomeLaunch.threadId ?? conversationThreadId ?? "pending-home-thread",
+      sourceRunId: pendingHomeLaunch.runId,
+      prompt: pendingHomeLaunch.prompt,
+      promptTs: pendingHomeLaunch.createdAt,
+      events: [] as Event[],
+      runStatus: "queued",
+      awaitingModule: null,
+      approvalSummary: null,
+    };
+
+    if (homeConversationSegments.some((segment) => segment.sourceRunId === pendingSegment.sourceRunId)) {
+      return homeConversationSegments;
+    }
+
+    return [...homeConversationSegments, pendingSegment];
+  }, [conversationThreadId, homeConversationSegments, pendingHomeLaunch]);
 
   const handleModeChange = (nextMode: ScholarMode) => {
     setThinkingMode(nextMode);
+    setError("");
   };
 
   const handleConfigChange = (nextConfig: RunConfig) => {
     setRunConfigDraft(cloneRunConfig(nextConfig));
     setThinkingMode(runConfigToMode(nextConfig));
     setIdeaTasteMode(getRunConfigIdeaTasteMode(nextConfig));
+    setSelectedAgents(modulesToLauncherAgents(nextConfig));
+    setError("");
   };
 
   const handleResetConfig = () => {
@@ -292,6 +665,8 @@ export const ScholarSearchHome = () => {
 
     setRunConfigDraft(next);
     setIdeaTasteMode(getRunConfigIdeaTasteMode(next));
+    setSelectedAgents(modulesToLauncherAgents(next));
+    setError("");
   };
 
   const toggleAgent = (agent: LauncherAgent) => {
@@ -325,53 +700,280 @@ export const ScholarSearchHome = () => {
   const handleSearch = async () => {
     const trimmed = query.trim();
     if (!trimmed) {
-      setError("Please enter a SciAgent task.");
+      setError(APP_COPY.home.emptyTaskError);
       focusInput();
       return;
     }
     if (selectedAgents.length === 0) {
-      setError("Select at least one agent.");
+      setError(APP_COPY.home.noAgentError);
       return;
     }
 
     setError("");
     setSubmitting(true);
+    setConversationLoadError("");
 
     try {
-      const topic = await createTopic(toTopicName(trimmed), trimmed);
-      const selectedAgentsPayload = [...selectedAgents];
+      const pendingRunId = `pending-${Date.now()}`;
+      setPendingHomeLaunch({
+        threadId: conversationThreadId,
+        runId: pendingRunId,
+        prompt: trimmed,
+        createdAt: Date.now(),
+      });
+
+      const promptSummary = toPromptSummary(trimmed);
       const submitConfig = sanitizeRunConfig(activeRunConfig);
-      const run = await startRun(topic.topicId, { prompt: trimmed, config: submitConfig });
-      rememberHistorySelection({ topicId: topic.topicId, runId: run.runId });
 
-      const params = new URLSearchParams();
-      params.set("runId", run.runId);
-      params.set("mode", thinkingMode);
-      params.set("view", "classic");
-      params.set("agents", selectedAgentsPayload.join(","));
+      if (isNewChat || !conversationThreadId) {
+        const topicTitle = toTopicName(trimmed);
+        const fallbackHistoryTitle = toHistoryFallbackTitle(trimmed);
+        const topic = await createTopic(topicTitle, trimmed);
+        const run = await startRun(topic.topicId, { prompt: trimmed, config: submitConfig });
+        const nextItem: SidebarRunHistoryItem = {
+          topicId: topic.topicId,
+          runId: run.runId,
+          title: resolveHistoryTitle(topic, run) || fallbackHistoryTitle,
+          summary: promptSummary,
+          status: toRunStatusBadge(run.status),
+          updatedAtLabel: formatUpdatedAtLabel(run.createdAt),
+        };
 
-      navigate(`/app/${encodeURIComponent(topic.topicId)}?${params.toString()}`);
+        setConversationThreadId(topic.topicId);
+        setConversationTitle(nextItem.title);
+        setActiveRunId(run.runId);
+        setConversationRuns([
+          {
+            topicId: topic.topicId,
+            runId: run.runId,
+            prompt: trimmed,
+            events: [],
+            runDetail: run,
+            createdAt: run.createdAt,
+          },
+        ]);
+        setPendingHomeLaunch(null);
+        setRunPromptsById((current) => ({ ...current, [run.runId]: trimmed }));
+        setHistoryItems((current) => upsertHistoryItem(current, nextItem));
+        void syncConversationThread({
+          topicId: topic.topicId,
+          runId: run.runId,
+          title: nextItem.title,
+          promptFallback: trimmed,
+          mode: "append-or-replace",
+        });
+      } else {
+        const run = await startRun(conversationThreadId, { prompt: trimmed, config: submitConfig });
+        const nextTitle = conversationTitle || activeThreadItem?.title || APP_COPY.home.runThreadTitleFallback;
+        const nextItem: SidebarRunHistoryItem = {
+          topicId: conversationThreadId,
+          runId: run.runId,
+          title: nextTitle,
+          summary: promptSummary,
+          status: toRunStatusBadge(run.status),
+          updatedAtLabel: formatUpdatedAtLabel(run.createdAt),
+        };
+
+        setActiveRunId(run.runId);
+        setConversationRuns((current) =>
+          upsertConversationRun(
+            current,
+            {
+              topicId: conversationThreadId,
+              runId: run.runId,
+              prompt: trimmed,
+              events: [],
+              runDetail: run,
+              createdAt: run.createdAt,
+            },
+            "append-or-replace",
+          ),
+        );
+        setPendingHomeLaunch(null);
+        setRunPromptsById((current) => ({ ...current, [run.runId]: trimmed }));
+        setHistoryItems((current) => upsertHistoryItem(current, nextItem));
+        void syncConversationThread({
+          topicId: conversationThreadId,
+          runId: run.runId,
+          title: nextTitle,
+          promptFallback: trimmed,
+          mode: "append-or-replace",
+        });
+      }
+
+      setQuery("");
+      setConfigExpanded(false);
     } catch (submitError) {
+      setPendingHomeLaunch(null);
       setError(getErrorMessage(submitError));
+      focusInput();
     } finally {
       setSubmitting(false);
     }
   };
 
+  const handleNewChat = () => {
+    conversationRequestRef.current += 1;
+    setActiveRunId(null);
+    setConversationThreadId(null);
+    setConversationTitle("");
+    setConversationRuns([]);
+    setPendingHomeLaunch(null);
+    setConversationLoadError("");
+    setLoadingConversation(false);
+    setQuery("");
+    setError("");
+    setConfigExpanded(false);
+    focusInput();
+  };
+
   const handleOpenRuns = () => {
-    const latest = historyItems[0];
-    if (latest) {
-      rememberHistorySelection(latest);
-      navigate(buildRunHref(latest));
+    if (conversationThreadId) {
+      navigate(buildRunsHref({ topicId: conversationThreadId, runId: activeRunId }));
       return;
     }
-    navigate("/app");
+    navigate("/runs");
   };
 
   const handleSelectHistoryItem = (item: SidebarRunHistoryItem) => {
-    rememberHistorySelection(item);
-    navigate(buildRunHref(item));
+    if (!item.runId) {
+      return;
+    }
+
+    setActiveRunId(item.runId);
+    setConversationThreadId(item.topicId);
+    setConversationTitle(item.title);
+    setConversationRuns([]);
+    setPendingHomeLaunch(null);
+    setLoadingConversation(true);
+    setConversationLoadError("");
+    setQuery("");
+    setError("");
+    setHomeApprovalNote("");
+    setHomeRunError("");
+    setConfigExpanded(false);
+    void syncConversationThread({
+      topicId: item.topicId,
+      runId: item.runId,
+      title: item.title,
+      mode: "reset",
+      showLoader: true,
+    });
   };
+
+  const handleApproveFromHome = async (approved: boolean) => {
+    if (!activeRunId || !activeAwaitingModule || !conversationThreadId) {
+      return;
+    }
+
+    setHomeApproving(true);
+    setHomeRunError("");
+    try {
+      await approveRun(activeRunId, {
+        module: activeAwaitingModule,
+        approved,
+        note: homeApprovalNote.trim() || undefined,
+      });
+      setHomeApprovalNote("");
+      await syncConversationThread({
+        topicId: conversationThreadId,
+        runId: activeRunId,
+        title: conversationTitle || activeThreadItem?.title || APP_COPY.home.runThreadTitleFallback,
+        mode: "append-or-replace",
+      });
+    } catch (approvalError) {
+      setHomeRunError(getErrorMessage(approvalError));
+    } finally {
+      setHomeApproving(false);
+    }
+  };
+
+  useEffect(() => {
+    topicWsRef.current?.close();
+    topicWsRef.current = null;
+
+    if (!conversationThreadId) {
+      return undefined;
+    }
+
+    topicWsRef.current = connectTopicWs({
+      topicId: conversationThreadId,
+      onError: () => {
+        // Keep the home chat resilient on transient websocket errors.
+      },
+      onEvent: (event) => {
+        if (event.topicId !== conversationThreadId) {
+          return;
+        }
+
+        setConversationRuns((current) => {
+          const existingIndex = current.findIndex((item) => item.runId === event.runId);
+          if (existingIndex < 0) {
+            return sortConversationRuns([
+              ...current,
+              {
+                topicId: conversationThreadId,
+                runId: event.runId,
+                prompt: runPromptsByIdRef.current[event.runId] || APP_COPY.home.followUpRequest,
+                events: [event],
+                runDetail: null,
+                createdAt: event.ts,
+              },
+            ]);
+          }
+
+          return current.map((item, index) =>
+            index === existingIndex
+              ? {
+                  ...item,
+                  events: upsertRunEvent(item.events, event),
+                }
+              : item,
+          );
+        });
+
+        if (["module_started", "module_finished", "module_skipped", "module_failed", "approval_required", "approval_resolved"].includes(event.kind)) {
+          void getRun(event.runId)
+            .then((detail) => {
+              setConversationRuns((current) =>
+                current.map((item) =>
+                  item.runId === detail.runId
+                    ? {
+                        ...item,
+                        runDetail: detail,
+                        createdAt: item.createdAt || detail.createdAt,
+                      }
+                    : item,
+                ),
+              );
+              setHistoryItems((current) =>
+                current.map((item) =>
+                  item.topicId === detail.topicId
+                    ? {
+                        ...item,
+                        runId: detail.runId,
+                        title: detail.historyTitle?.trim() || item.title,
+                        status: toRunStatusBadge(detail.status),
+                      }
+                    : item,
+                ),
+              );
+              if (detail.runId === activeRunId && detail.historyTitle?.trim()) {
+                setConversationTitle(detail.historyTitle.trim());
+              }
+            })
+            .catch(() => {
+              // Keep page resilient on transient failures.
+            });
+        }
+      },
+    });
+
+    return () => {
+      topicWsRef.current?.close();
+      topicWsRef.current = null;
+    };
+  }, [conversationThreadId]);
 
   useEffect(() => {
     if (!configExpanded) {
@@ -394,7 +996,11 @@ export const ScholarSearchHome = () => {
         user={user}
         historyItems={historyItems}
         loadingHistory={loadingHistory}
-        activeHistoryKey={activeHistoryKey}
+        activeRunId={activeRunId}
+        sessionMode={sessionMode}
+        collapsed={collapsed}
+        onToggleCollapsed={toggleCollapsed}
+        onNewChat={handleNewChat}
         onOpenRuns={handleOpenRuns}
         onSelectHistoryItem={handleSelectHistoryItem}
         onSwitchAccount={() => {
@@ -407,48 +1013,154 @@ export const ScholarSearchHome = () => {
         }}
       />
 
-      <main className="scholar-home-main">
-        <div className="scholar-hero">
-          <h1>Start a SciAgent run for review, ideation, and experiment planning.</h1>
-          <p className="scholar-hero-note">
-            Draft the task once, choose the agents you want, and launch a new workflow from here.
-          </p>
-          <ScholarSearchBox
-            query={query}
-            mode={thinkingMode}
-            ideaTasteMode={ideaTasteMode}
-            ideaPreferenceEnabled={selectedAgents.includes("idea")}
-            configExpanded={configExpanded}
-            agentChips={agentChips}
-            onQueryChange={setQuery}
-            onModeChange={handleModeChange}
-            onIdeaTasteModeChange={setIdeaTasteMode}
-            onAgentSelect={toggleAgent}
-            onToggleConfig={() => setConfigExpanded((current) => !current)}
-            onSubmit={() => void handleSearch()}
-            submitting={submitting}
-            canSubmit={canSubmit}
-            inputRef={inputRef}
-          />
-          {error ? <p className="form-error">{error}</p> : null}
+      <main className="flex-1 min-h-0 flex flex-col relative overflow-hidden bg-surface">
+        <header className="flex justify-between items-center w-full px-6 h-16 bg-[#f5f7f9]/70 backdrop-blur-xl z-50 shadow-sm">
+          <div className="flex-1" />
+          <div className="flex items-center gap-2">
+            <div className="ml-2 w-8 h-8 rounded-full overflow-hidden bg-surface-container-high border border-outline-variant/20 flex items-center justify-center text-xs font-bold">
+              {(user?.username ?? "S").slice(0, 1).toUpperCase()}
+            </div>
+          </div>
+        </header>
+
+        <div
+          className={[
+            "flex-1 min-h-0 flex flex-col items-center px-6 max-w-5xl mx-auto w-full relative",
+            homeDisplaySegments.length > 0 ? "justify-start py-0" : "justify-center",
+          ].join(" ")}
+        >
+          <div
+            className={
+              isNewChat && homeDisplaySegments.length === 0
+                ? "w-full"
+                : "w-full h-full min-h-0 overflow-y-auto overflow-x-hidden"
+            }
+          >
+                  {homeDisplaySegments.length > 0 ? (
+              <div className="w-full min-h-0 py-8">
+                <RunMessageStream
+                  segments={homeDisplaySegments}
+                  taskPrompt={pendingHomeLaunch?.prompt ?? activeConversationRun?.prompt ?? ""}
+                  events={activeConversationRun?.events ?? []}
+                  awaitingModule={activeAwaitingModule}
+                  approvalSummary={activeApprovalSummary}
+                  approvalNote={homeApprovalNote}
+                  approving={homeApproving}
+                  runError={homeRunError}
+                  runStatus={activeRunStatus}
+                  embedded
+                  onApprovalNoteChange={setHomeApprovalNote}
+                  onApprove={(approved) => { void handleApproveFromHome(approved); }}
+                  onOpenArtifact={() => {
+                    navigate(
+                      buildRunsHref({
+                        topicId: conversationThreadId ?? activeConversationRun?.topicId,
+                        runId: activeRunId ?? undefined,
+                      }),
+                    );
+                  }}
+                />
+              </div>
+            ) : isNewChat ? (
+              <div className="scholar-home-welcome-layout">
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.56, ease: HOME_FADE_EASE }}
+                  className="text-center mb-12"
+                >
+                  <motion.h2
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.58, delay: 0.04, ease: HOME_FADE_EASE }}
+                    className="scholar-home-hero-title"
+                  >
+                    <span className="scholar-home-hero-text scholar-home-hero-text-sheen" data-text="今天想让">
+                      今天想让
+                    </span>
+                    <span className="scholar-home-hero-wordmark" aria-label="xcientist">
+                      <BrandWordmark size={304} theme="light" />
+                    </span>
+                    <span className="scholar-home-hero-text scholar-home-hero-text-sheen" data-text="做什么？">
+                      做什么？
+                    </span>
+                  </motion.h2>
+                  <motion.p
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.54, delay: 0.1, ease: HOME_FADE_EASE }}
+                    className="mx-auto mt-5 max-w-2xl text-[15px] font-normal leading-7 tracking-[0.01em] text-[#64748b] md:text-[17px]"
+                  >
+                    {APP_COPY.home.welcomeDesc}
+                  </motion.p>
+                </motion.div>
+
+                <div className="w-full">
+                  {conversationLoadError && conversationRuns.length > 0 ? <p className="form-error">{conversationLoadError}</p> : null}
+                  {error ? <p className="form-error">{error}</p> : null}
+                  <ScholarSearchBox
+                    query={query}
+                    mode={thinkingMode}
+                    ideaTasteMode={ideaTasteMode}
+                    ideaPreferenceEnabled={selectedAgents.includes("idea")}
+                    placeholder={APP_COPY.searchBox.defaultPlaceholder}
+                    prominent
+                    disabled={loadingConfig}
+                    configExpanded={configExpanded}
+                    agentChips={agentChips}
+                    onQueryChange={setQuery}
+                    onModeChange={handleModeChange}
+                    onIdeaTasteModeChange={setIdeaTasteMode}
+                    onAgentSelect={toggleAgent}
+                    onToggleConfig={() => setConfigExpanded((current) => !current)}
+                    onSubmit={() => void handleSearch()}
+                    submitting={submitting}
+                    canSubmit={canSubmit}
+                    inputRef={inputRef}
+                  />
+                </div>
+              </div>
+            ) : loadingConversation && conversationRuns.length === 0 ? (
+              <div className="scholar-home-conversation-empty scholar-home-conversation-empty-loading">
+                <div className="scholar-home-conversation-loader" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <strong>{APP_COPY.home.loadingConversationTitle}</strong>
+                <p>{APP_COPY.home.loadingConversationDesc}</p>
+              </div>
+            ) : conversationLoadError && conversationRuns.length === 0 ? (
+              <div className="scholar-home-conversation-error">
+                <p className="form-error">{conversationLoadError}</p>
+              </div>
+            ) : null}
+          </div>
         </div>
+
+        <footer className="p-6 text-center text-[10px] text-on-surface-variant/40 tracking-widest uppercase font-bold">
+          XCIENTIST AI ENGINE V4.2 • SECURE ENTERPRISE INSTANCE
+        </footer>
+
+        <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-primary/5 rounded-full blur-[120px] -mr-64 -mt-64 pointer-events-none" />
+        <div className="absolute bottom-0 left-0 w-[600px] h-[600px] bg-tertiary/5 rounded-full blur-[140px] -ml-80 -mb-80 pointer-events-none" />
       </main>
       {configExpanded ? (
         <div className="scholar-config-flyout-shell" role="presentation">
           <button
             type="button"
             className="scholar-config-flyout-backdrop"
-            aria-label="Close run config"
+            aria-label={APP_COPY.home.closeRunConfigAria}
             onClick={() => setConfigExpanded(false)}
           />
-          <aside className="scholar-config-flyout" aria-label="Run config panel">
+          <aside className="scholar-config-flyout" aria-label={APP_COPY.home.runConfigPanelAria}>
             <div className="scholar-config-flyout-header">
               <div>
-                <h2>Run Config</h2>
+                <h2>{APP_COPY.home.configTitle}</h2>
                 <p>
                   {selectedAgents.length === 1
-                    ? `Editing ${primarySelectedAgent === "idea" ? "idea" : primarySelectedAgent} settings for this run.`
-                    : `Editing ${selectedAgents.length} selected agents. Only the selected agents will be enabled at launch.`}
+                    ? APP_COPY.home.singleAgentConfig(primarySelectedAgent === "idea" ? "idea" : primarySelectedAgent)
+                    : APP_COPY.home.multiAgentConfig(selectedAgents.length)}
                 </p>
               </div>
               <button
@@ -456,12 +1168,12 @@ export const ScholarSearchHome = () => {
                 className="scholar-config-flyout-close"
                 onClick={() => setConfigExpanded(false)}
               >
-                Close
+                {APP_COPY.common.close}
               </button>
             </div>
             <div className="scholar-config-flyout-body">
               {selectedModules.length === 0 ? (
-                <section className="run-config-bar muted">Select at least one agent to edit its launch config.</section>
+                <section className="run-config-bar muted">{APP_COPY.home.configEmpty}</section>
               ) : (
                 <RunConfigBar
                   config={activeRunConfig}
@@ -471,17 +1183,8 @@ export const ScholarSearchHome = () => {
                   showIdeaPreference
                   ideaPreferenceEnabled={selectedAgents.includes("idea")}
                   ideaTasteMode={ideaTasteMode}
-                  ideaPreferenceHint={selectedAgents.includes("idea") ? "作用于 Idea agent" : "仅对 Idea 生效"}
+                  ideaPreferenceHint={selectedAgents.includes("idea") ? APP_COPY.searchBox.ideaPreferenceActive : APP_COPY.searchBox.ideaPreferenceInactive}
                   onIdeaTasteModeChange={setIdeaTasteMode}
-                  lockModuleEnabled
-                  currentAgent={launcherAgentToModule(primarySelectedAgent)}
-                  currentAgentLabel={
-                    primarySelectedAgent === "idea"
-                      ? "Idea"
-                      : primarySelectedAgent.charAt(0).toUpperCase() + primarySelectedAgent.slice(1)
-                  }
-                  singleAgentMode={selectedModules.length === 1}
-                  visibleAgents={selectedModules}
                 />
               )}
             </div>
@@ -491,3 +1194,7 @@ export const ScholarSearchHome = () => {
     </section>
   );
 };
+
+
+
+

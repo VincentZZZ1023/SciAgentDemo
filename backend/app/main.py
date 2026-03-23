@@ -10,7 +10,7 @@ from app.store import init_db
 settings = get_settings()
 
 app = FastAPI(
-    title="SciAgentDemo Backend",
+    title="xcientist Backend",
     version="0.3.0",
     description="FastAPI backend with REST/WS contract, PostgreSQL persistence, and fake runner",
 )

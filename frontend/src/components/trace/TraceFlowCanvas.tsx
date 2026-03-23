@@ -11,6 +11,7 @@ import {
 } from "@xyflow/react";
 import { fetchArtifactContent } from "../../api/client";
 import { ArtifactContentView } from "../artifact/ArtifactContentView";
+import { APP_COPY, formatAgentLabel, formatAgentTitle, formatMessageRoleLabel, formatTraceKindLabel } from "../../lib/copy";
 import { useTheme } from "../../theme/ThemeProvider";
 import {
   AGENT_IDS,
@@ -36,9 +37,9 @@ const LANE_X: Record<AgentId, number> = {
 };
 
 const LANE_LABELS: Record<AgentId, string> = {
-  review: "Review",
-  ideation: "Ideation",
-  experiment: "Experiment",
+  review: formatAgentTitle("review"),
+  ideation: formatAgentTitle("ideation"),
+  experiment: formatAgentTitle("experiment"),
 };
 
 const ROW_HEIGHT = 120;
@@ -48,7 +49,7 @@ const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
     return error.message;
   }
-  return "Request failed";
+  return APP_COPY.common.requestFailed;
 };
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -159,7 +160,7 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
       const message = item.kind === "message" ? getTraceMessage(item) : null;
       const artifact = item.kind === "artifact" ? getTraceArtifact(item) : null;
 
-      const header = item.kind === "message" ? `${message?.role ?? "assistant"} message` : item.kind;
+      const header = item.kind === "message" ? `${formatMessageRoleLabel(message?.role ?? "assistant")} ${APP_COPY.trace.message}` : formatTraceKindLabel(item.kind);
       const body =
         item.kind === "message"
           ? trimSingleLine(message?.content ?? item.summary)
@@ -167,7 +168,7 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
             ? artifact?.name ?? parseArtifactNameFromSummary(item.summary) ?? item.summary
             : trimSingleLine(item.summary);
 
-      const footer = item.kind === "artifact" ? "Preview available" : trimSingleLine(item.summary, 72);
+      const footer = item.kind === "artifact" ? APP_COPY.trace.previewAvailable : trimSingleLine(item.summary, 72);
 
       nodes.push({
         id: nodeId,
@@ -176,8 +177,8 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
           label: (
             <div className={`trace-flow-node trace-kind-${item.kind}`}>
               <div className="trace-flow-node-head">
-                <span className="event-badge">{item.agentId}</span>
-                <span className="event-badge event-badge-kind">{item.kind}</span>
+                <span className="event-badge">{formatAgentLabel(item.agentId)}</span>
+                <span className="event-badge event-badge-kind">{formatTraceKindLabel(item.kind)}</span>
                 <span className="trace-flow-node-time">{formatTime(item.ts)}</span>
               </div>
               <strong>{header}</strong>
@@ -213,7 +214,7 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
         data: {
           label: (
             <div className="trace-flow-anchor">
-              <span>{LANE_LABELS[agentId]} anchor</span>
+              <span>{LANE_LABELS[agentId]} {APP_COPY.flow.anchorSuffix}</span>
             </div>
           ),
         },
@@ -397,7 +398,7 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
           <Controls />
         </ReactFlow>
 
-        {loading ? <div className="trace-flow-overlay muted">Loading trace...</div> : null}
+        {loading ? <div className="trace-flow-overlay muted">{APP_COPY.common.loadingTrace}</div> : null}
         {!loading && error ? <div className="trace-flow-overlay form-error">{error}</div> : null}
       </div>
 
@@ -407,27 +408,27 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
             type="button"
             className="trace-flow-drawer-backdrop"
             onClick={() => setSelectedNodeId(null)}
-            aria-label="Close trace drawer"
+            aria-label={APP_COPY.trace.flowDrawerCloseAria}
           />
-          <aside className="trace-flow-drawer" role="dialog" aria-label="Trace item detail">
+          <aside className="trace-flow-drawer" role="dialog" aria-label={APP_COPY.trace.flowDrawerAria}>
             <header className="trace-flow-drawer-header">
               <div>
-                <h4>{selectedItem.agentId} detail</h4>
+                <h4>{APP_COPY.trace.flowDetailTitle(formatAgentLabel(selectedItem.agentId))}</h4>
                 <p className="muted">
-                  {selectedItem.kind} at {new Date(selectedItem.ts).toLocaleString()}
+                  {APP_COPY.trace.flowDetailMeta(formatTraceKindLabel(selectedItem.kind), new Date(selectedItem.ts).toLocaleString())}
                 </p>
               </div>
               <button type="button" onClick={() => setSelectedNodeId(null)}>
-                Close
+                {APP_COPY.common.close}
               </button>
             </header>
 
             <div className="trace-flow-drawer-body">
               {selectedItem.kind === "message" ? (
                 <section className="trace-flow-detail-block">
-                  <h5>Message</h5>
+                  <h5>{APP_COPY.trace.message}</h5>
                   <p>
-                    <strong>role:</strong> {selectedMessage?.role ?? "assistant"}
+                    <strong>{APP_COPY.trace.roleField}:</strong> {formatMessageRoleLabel(selectedMessage?.role ?? "assistant")}
                   </p>
                   <pre>{selectedMessage?.content ?? selectedItem.summary}</pre>
                 </section>
@@ -435,12 +436,12 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
 
               {selectedItem.kind === "artifact" ? (
                 <section className="trace-flow-detail-block">
-                  <h5>Artifact</h5>
+                  <h5>{APP_COPY.trace.artifact}</h5>
                   <p>
-                    <strong>name:</strong> {selectedArtifact?.name ?? "unknown"}
+                    <strong>{APP_COPY.trace.nameField}:</strong> {selectedArtifact?.name ?? APP_COPY.common.unknown}
                   </p>
                   <p>
-                    <strong>type:</strong> {selectedArtifact?.contentType ?? "unknown"}
+                    <strong>{APP_COPY.trace.typeField}:</strong> {selectedArtifact?.contentType ?? APP_COPY.common.unknown}
                   </p>
                   {selectedArtifact ? (
                     <button
@@ -449,7 +450,7 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
                       onClick={() => void handleLoadPreview()}
                       disabled={previewLoading}
                     >
-                      {previewLoading ? "Loading..." : "Preview"}
+                      {previewLoading ? APP_COPY.common.loading : APP_COPY.common.preview}
                     </button>
                   ) : null}
                   {previewError ? <p className="form-error">{previewError}</p> : null}
@@ -465,17 +466,17 @@ export const TraceFlowCanvas = ({ items, artifacts, loading, error }: TraceFlowC
 
               {selectedItem.kind !== "message" && selectedItem.kind !== "artifact" ? (
                 <section className="trace-flow-detail-block">
-                  <h5>Summary</h5>
+                  <h5>{APP_COPY.common.summary}</h5>
                   <p>{selectedItem.summary}</p>
                 </section>
               ) : null}
 
               <section className="trace-flow-detail-block">
-                <h5>Payload</h5>
+                <h5>{APP_COPY.common.payload}</h5>
                 <pre>
                   {selectedItem.payload
                     ? JSON.stringify(selectedItem.payload, null, 2)
-                    : "(no payload)"}
+                    : APP_COPY.trace.noPayload}
                 </pre>
               </section>
             </div>

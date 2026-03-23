@@ -1,4 +1,5 @@
-import { FormEvent } from "react";
+﻿import { FormEvent } from "react";
+import { APP_COPY } from "../../lib/copy";
 
 interface ComposerProps {
   value: string;
@@ -27,23 +28,23 @@ export const Composer = ({
       <form className="composer-form" onSubmit={handleSubmit}>
         <div className="composer-head">
           <label htmlFor="run-prompt" className="composer-title">
-            Start A New Run
+            {APP_COPY.composer.title}
           </label>
-          <p className="composer-subtitle">Describe target, constraints and expected output format.</p>
+          <p className="composer-subtitle">{APP_COPY.composer.subtitle}</p>
         </div>
         <textarea
           id="run-prompt"
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          placeholder="Describe what you want the agents to research and deliver..."
+          placeholder={APP_COPY.composer.placeholder}
           rows={4}
           disabled={disabled || submitting}
         />
 
         <div className="composer-actions">
-          {error ? <p className="form-error">{error}</p> : <span className="muted">Prompt is required</span>}
+          {error ? <p className="form-error">{error}</p> : <span className="muted">{APP_COPY.composer.promptRequired}</span>}
           <button type="submit" className="run-button" disabled={disabled || submitting}>
-            {submitting ? "Launching..." : "Run"}
+            {submitting ? APP_COPY.composer.launching : APP_COPY.common.run}
           </button>
         </div>
       </form>

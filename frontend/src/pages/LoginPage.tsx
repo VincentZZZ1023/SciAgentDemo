@@ -36,7 +36,7 @@ export const LoginPage = () => {
   return (
     <div className="login-page">
       <form className="login-card" onSubmit={handleSubmit}>
-        <h1>SciAgentDemo</h1>
+        <h1>xcientist</h1>
         <p>Sign in to continue.</p>
 
         <label>

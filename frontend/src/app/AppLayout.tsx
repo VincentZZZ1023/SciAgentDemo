@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+﻿import { useCallback, useEffect, useState } from "react";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { createTopic, deleteTopic, getTopics } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { TopicList } from "../components/sidebar/TopicList";
+import { APP_COPY } from "../lib/copy";
+import { useSidebarCollapse } from "../lib/useSidebarCollapse";
 import type { TopicSummary } from "../types/events";
 
 export interface AppLayoutContext {
@@ -15,7 +17,7 @@ const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
     return error.message;
   }
-  return "Unexpected error";
+  return APP_COPY.common.unexpectedError;
 };
 
 export const AppLayout = () => {
@@ -39,6 +41,7 @@ export const AppLayout = () => {
   const [topics, setTopics] = useState<TopicSummary[]>([]);
   const [loadingTopics, setLoadingTopics] = useState(false);
   const [topicsError, setTopicsError] = useState("");
+  const { collapsed, toggleCollapsed } = useSidebarCollapse();
 
   const refreshTopics = useCallback(async (): Promise<TopicSummary[]> => {
     setLoadingTopics(true);
@@ -113,12 +116,14 @@ export const AppLayout = () => {
   };
 
   return (
-    <div className="app-shell">
-      <aside className="app-sidebar">
+    <div className={`app-shell run-workbench-shell ${collapsed ? "app-shell-sidebar-collapsed" : ""}`}>
+      <aside className="app-sidebar run-workbench-sidebar">
         <TopicList
           user={user}
           isAdmin={isAdmin}
           topics={topics}
+          collapsed={collapsed}
+          onToggleCollapsed={toggleCollapsed}
           currentTopicId={topicId}
           loading={loadingTopics}
           error={topicsError}
@@ -137,7 +142,7 @@ export const AppLayout = () => {
         />
       </aside>
 
-      <main className="app-main">
+      <main className="app-main run-workbench-main">
         <Outlet
           context={
             {

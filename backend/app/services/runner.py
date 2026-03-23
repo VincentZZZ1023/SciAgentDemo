@@ -15,6 +15,7 @@ from app.models.schemas import AgentId, ArtifactRef, Event, EventKind, RunConfig
 from app.services.approval_manager import ApprovalDecision, approval_manager
 from app.services.deepseek_client import DeepSeekClientError, deepseek_client
 from app.services.event_bus import event_bus
+from app.services.history_title_service import history_title_service
 from app.services.prompt_builder import build_agent_prompt_context, infer_language_code
 from app.store import store
 
@@ -198,6 +199,18 @@ class FakePipelineRunner:
         }
         if metrics:
             payload["metrics"] = metrics
+
+        if status == "success":
+            artifact_summary = ", ".join(name for name in artifact_names if isinstance(name, str) and name.strip())
+            assistant_text = (
+                f"{module_runtime.module} 输出已生成"
+                + (f"：{artifact_summary}" if artifact_summary else "")
+            )
+            await history_title_service.maybe_generate_for_run_output(
+                topic_id=topic_id,
+                run_id=run_id,
+                assistant_text=assistant_text,
+            )
 
         await self._emit(
             build_event(

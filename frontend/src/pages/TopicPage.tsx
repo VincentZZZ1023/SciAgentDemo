@@ -1,4 +1,4 @@
-
+﻿
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useOutletContext, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -15,10 +15,21 @@ import { connectTopicWs, type TopicWsConnection, type WsStatus } from "../api/ws
 import type { AppLayoutContext } from "../app/AppLayout";
 import { ArtifactContentView } from "../components/artifact/ArtifactContentView";
 import { AgentDrawer } from "../components/cli/AgentDrawer";
-import { Composer } from "../components/run/Composer";
-import { ThemeToggle } from "../components/ThemeToggle";
 import { EventFeed } from "../components/feed/EventFeed";
 import { FlowCanvas } from "../components/flow/FlowCanvas";
+import { Composer } from "../components/run/Composer";
+import { ThemeToggle } from "../components/ThemeToggle";
+import {
+  APP_COPY,
+  formatAgentLabel,
+  formatBooleanLabel,
+  formatEventKindLabel,
+  formatOnlineLabel,
+  formatRunStatusLabel,
+  formatSeverityLabel,
+  formatTopicStatusLabel,
+  formatWsStatusLabel,
+} from "../lib/copy";
 import { cloneRunConfig, runConfigToMode, sanitizeRunConfig } from "../lib/runConfig";
 import { type DrawerTab } from "../components/workflow/DrawerTabHeader";
 import { RunMessageStream } from "../components/workflow/RunMessageStream";
@@ -46,7 +57,7 @@ const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
     return error.message;
   }
-  return "Request failed";
+  return APP_COPY.common.requestFailed;
 };
 
 const createEmptyStatus = (agentId: AgentId): AgentStatus => ({
@@ -90,6 +101,8 @@ const eventFieldString = (value: unknown): string => (typeof value === "string" 
 
 const eventFieldNumber = (value: unknown): number =>
   typeof value === "number" && Number.isFinite(value) ? value : 0;
+
+const normalizeSearchText = (value: string): string => value.trim().toLowerCase();
 
 const getEventStableId = (event: Event): string =>
   eventFieldString((event as Event & { id?: unknown }).eventId) ||
@@ -197,19 +210,14 @@ const getEventModule = (event: Event): string => {
 };
 
 const toRunStatusClass = (status: string): string => `status-${status || "idle"}`;
-const getWsStatusLabel = (status: WsStatus): string => {
-  if (status === "closed") {
-    return "disconnected";
-  }
-  return status;
-};
+const getWsStatusLabel = (status: WsStatus): string => formatWsStatusLabel(status === "closed" ? "disconnected" : status);
 
 type ClassicPrimaryTab = "chat" | "pipeline" | "trace";
 const normalizeClassicPrimaryTab = (value: string | null): ClassicPrimaryTab => {
   if (value === "pipeline" || value === "trace" || value === "chat") {
     return value;
   }
-  return "chat";
+  return "pipeline";
 };
 
 export const TopicPage = () => {
@@ -257,6 +265,7 @@ export const TopicPage = () => {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(searchParams.get("runId"));
   const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
   const [runError, setRunError] = useState("");
+  const [workspaceSearch, setWorkspaceSearch] = useState("");
   const [approving, setApproving] = useState(false);
   const [approvalSummary, setApprovalSummary] = useState<string | null>(null);
   const [approvalNote, setApprovalNote] = useState("");
@@ -350,6 +359,96 @@ export const TopicPage = () => {
   const logSourceEvents = useMemo(() => {
     return selectedRunId ? events.filter((event) => event.runId === selectedRunId) : events;
   }, [events, selectedRunId]);
+  const workspaceSearchTerm = useMemo(() => normalizeSearchText(workspaceSearch), [workspaceSearch]);
+  const workspaceFilteredEvents = useMemo(() => {
+    if (!workspaceSearchTerm) {
+      return logSourceEvents;
+    }
+
+    return logSourceEvents.filter((event) => {
+      const haystack = [
+        event.summary,
+        event.kind,
+        event.agentId,
+        event.severity,
+        typeof event.payload?.module === "string" ? event.payload.module : "",
+        typeof event.payload?.status === "string" ? event.payload.status : "",
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return haystack.includes(workspaceSearchTerm);
+    });
+  }, [logSourceEvents, workspaceSearchTerm]);
+  const workspaceFilteredTraceItems = useMemo(() => {
+    if (!workspaceSearchTerm) {
+      return traceItems;
+    }
+
+    return traceItems.filter((item) => {
+      const haystack = [item.summary, item.kind, item.agentId, JSON.stringify(item.payload ?? {})]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(workspaceSearchTerm);
+    });
+  }, [traceItems, workspaceSearchTerm]);
+  const thinkingSteps = useMemo(() => {
+    return pipelineAgents.map((agentId, index) => {
+      const agent = agentsStatus[agentId];
+      const subtasks = agentSubtasks[agentId] ?? [];
+      const latestDetail = subtasks.find((item) => item.status === "running") ?? subtasks[subtasks.length - 1] ?? null;
+      const progress = Math.max(agent?.progress ?? 0, latestDetail?.progress ?? 0);
+      const status = (agent?.status ?? "idle").toLowerCase();
+      const statusLabel =
+        status === "completed" || status === "succeeded"
+          ? "COMPLETED"
+          : status === "running"
+            ? "PROCESSING..."
+            : status === "failed"
+              ? "FAILED"
+              : "QUEUED";
+
+      return {
+        id: agentId,
+        index,
+        title:
+          agentId === "review"
+            ? "Analyzing Architecture"
+            : agentId === "ideation"
+              ? "Evaluating Performance"
+              : "Identifying Latency Risks",
+        description:
+          latestDetail?.name ||
+          agent?.lastSummary ||
+          (agentId === "review"
+            ? "Deconstructing references and identifying the main technical signals."
+            : agentId === "ideation"
+              ? "Connecting evidence into candidate directions and benchmark hypotheses."
+              : "Validating the highest-risk assumptions and drafting next actions."),
+        active: status === "running",
+        completed: status === "completed" || status === "succeeded",
+        progress: Math.round(progress * 100),
+        statusLabel,
+      };
+    });
+  }, [agentSubtasks, agentsStatus, pipelineAgents]);
+  const keyFindings = useMemo(() => {
+    const candidates = [...logSourceEvents]
+      .filter((event) => event.summary.trim().length > 0)
+      .slice(-6)
+      .reverse()
+      .slice(0, 3);
+
+    if (candidates.length === 0) {
+      return [
+        "Waiting for the first decisive signal from the current run.",
+        "Key findings will appear here as soon as modules emit structured progress.",
+        "Recent artifacts and milestone summaries will be pinned automatically.",
+      ];
+    }
+
+    return candidates.map((event) => event.summary);
+  }, [logSourceEvents]);
 
   const logModuleOptions = useMemo(() => {
     const modules = new Set(logSourceEvents.map(getEventModule));
@@ -515,7 +614,7 @@ export const TopicPage = () => {
 
     setLoadingSnapshot(true);
     setError("");
-    setRunError("");
+    setRunError("\u5f53\u524d\u540e\u7aef\u672a\u63d0\u4f9b\u505c\u6b62\u4efb\u52a1\u63a5\u53e3");
     setTraceError("");
     setWsStatus("connecting");
 
@@ -684,7 +783,7 @@ export const TopicPage = () => {
         setTraceItems(trace.items ?? []);
         setRunDetail(run);
         if (run.awaitingApproval && run.awaitingModule) {
-          setApprovalSummary((current) => current ?? `${run.awaitingModule} is waiting for approval`);
+          setApprovalSummary((current) => current ?? APP_COPY.home.approvalWaiting(run.awaitingModule ?? APP_COPY.common.unknown));
         } else {
           setApprovalSummary(null);
         }
@@ -722,19 +821,19 @@ export const TopicPage = () => {
     }
 
     if (!trimmedPrompt) {
-      setPromptError("Prompt is required");
+      setPromptError(APP_COPY.composer.promptRequired);
       return;
     }
 
     if (!runConfigDraft) {
-      setPromptError("Run config is not ready");
+      setPromptError(APP_COPY.runConfig.unavailable);
       return;
     }
 
     setSubmittingRun(true);
     setError("");
     setPromptError("");
-    setRunError("");
+    setRunError("\u5f53\u524d\u540e\u7aef\u672a\u63d0\u4f9b\u505c\u6b62\u4efb\u52a1\u63a5\u53e3");
 
     try {
       const config = sanitizeRunConfig(runConfigDraft);
@@ -773,7 +872,7 @@ export const TopicPage = () => {
     }
 
     setApproving(true);
-    setRunError("");
+    setRunError("\u5f53\u524d\u540e\u7aef\u672a\u63d0\u4f9b\u505c\u6b62\u4efb\u52a1\u63a5\u53e3");
 
     try {
       await approveRun(selectedRunId, {
@@ -805,6 +904,39 @@ export const TopicPage = () => {
   const openDrawer = (tab: DrawerTab) => {
     setActiveTab(tab);
     setDrawerOpen(true);
+  };
+
+  const handleBackToHome = () => {
+    navigate("/app-center");
+  };
+
+  const handleShareRun = async () => {
+    const shareUrl = window.location.href;
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: headerTitle,
+          text: headerTitle,
+          url: shareUrl,
+        });
+        return;
+      }
+
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(shareUrl);
+        setError("\u5f53\u524d\u94fe\u63a5\u5df2\u590d\u5236");
+        return;
+      }
+    } catch (shareError) {
+      setError(getErrorMessage(shareError));
+      return;
+    }
+
+    setError("\u5f53\u524d\u73af\u5883\u4e0d\u652f\u6301\u5206\u4eab");
+  };
+
+  const handleStopUnavailable = () => {
+    setRunError("\u5f53\u524d\u540e\u7aef\u672a\u63d0\u4f9b\u505c\u6b62\u4efb\u52a1\u63a5\u53e3");
   };
 
   const closeDrawer = () => {
@@ -890,9 +1022,9 @@ export const TopicPage = () => {
 
   if (!topicId) {
     return (
-      <section className="topic-empty">
-        <h2>No topic selected</h2>
-        <p>Create one in the left sidebar, then open it.</p>
+      <section className="topic-empty run-workbench-page">
+        <h2>{APP_COPY.runs.noTopicSelectedTitle}</h2>
+        <p>{APP_COPY.runs.noTopicSelectedDesc}</p>
       </section>
     );
   }
@@ -910,14 +1042,14 @@ export const TopicPage = () => {
       {activeTab === "log" ? (
         <section className="workflow-log-panel">
           <header className="workflow-log-header">
-            <h4>Event Log</h4>
-            <span className="muted">{filteredLogEvents.length} events</span>
+            <h4>{APP_COPY.runs.eventLog}</h4>
+            <span className="muted">{filteredLogEvents.length} {APP_COPY.trace.itemsSuffix}</span>
           </header>
           <div className="workflow-log-filters">
             <label>
-              Module
+              {APP_COPY.runs.moduleField}
               <select value={logModuleFilter} onChange={(event) => setLogModuleFilter(event.target.value)}>
-                <option value="all">All</option>
+                <option value="all">{APP_COPY.runs.all}</option>
                 {logModuleOptions.map((module) => (
                   <option key={module} value={module}>
                     {module}
@@ -926,9 +1058,9 @@ export const TopicPage = () => {
               </select>
             </label>
             <label>
-              Kind
+              {APP_COPY.runs.kindField}
               <select value={logKindFilter} onChange={(event) => setLogKindFilter(event.target.value)}>
-                <option value="all">All</option>
+                <option value="all">{APP_COPY.runs.all}</option>
                 {logKindOptions.map((kind) => (
                   <option key={kind} value={kind}>
                     {kind}
@@ -937,31 +1069,31 @@ export const TopicPage = () => {
               </select>
             </label>
             <label>
-              Severity
+              {APP_COPY.runs.severityField}
               <select value={logSeverityFilter} onChange={(event) => setLogSeverityFilter(event.target.value)}>
-                <option value="all">All</option>
-                <option value="info">info</option>
-                <option value="warn">warn</option>
-                <option value="error">error</option>
+                <option value="all">{APP_COPY.runs.all}</option>
+                <option value="info">{formatSeverityLabel("info")}</option>
+                <option value="warn">{formatSeverityLabel("warn")}</option>
+                <option value="error">{formatSeverityLabel("error")}</option>
               </select>
             </label>
           </div>
           <div className="workflow-log-list">
-            {filteredLogEvents.length === 0 ? <p className="muted">No events match current filters.</p> : null}
+            {filteredLogEvents.length === 0 ? <p className="muted">{APP_COPY.runs.noFilteredEvents}</p> : null}
             {filteredLogEvents.map((event) => (
               <article key={event.eventId} className={`workflow-log-item event-${event.severity}`}>
                 <header>
                   <div className="workflow-feed-meta">
                     <span className="event-time">{formatEventTime(event.ts)}</span>
                     <span className="event-badge">{getEventModule(event)}</span>
-                    <span className="event-badge event-badge-kind">{event.kind}</span>
+                    <span className="event-badge event-badge-kind">{formatEventKindLabel(event.kind)}</span>
                   </div>
-                  <span className={`event-badge event-badge-severity severity-${event.severity}`}>{event.severity}</span>
+                  <span className={`event-badge event-badge-severity severity-${event.severity}`}>{formatSeverityLabel(event.severity)}</span>
                 </header>
                 <p>{event.summary}</p>
                 {event.payload ? (
                   <details className="workflow-log-payload">
-                    <summary>payload</summary>
+                    <summary>{APP_COPY.common.payload}</summary>
                     <pre>{formatJsonPretty(event.payload)}</pre>
                   </details>
                 ) : null}
@@ -974,11 +1106,11 @@ export const TopicPage = () => {
       {activeTab === "artifacts" ? (
         <section className="workflow-artifacts-panel">
           <header className="workflow-log-header">
-            <h4>Artifacts</h4>
-            <span className="muted">{drawerArtifacts.length} files</span>
+            <h4>{APP_COPY.common.artifacts}</h4>
+            <span className="muted">{drawerArtifacts.length} {APP_COPY.runs.filesSuffix}</span>
           </header>
           <div className="workflow-artifacts-list">
-            {drawerArtifacts.length === 0 ? <p className="muted">No artifacts available for this run.</p> : null}
+            {drawerArtifacts.length === 0 ? <p className="muted">{APP_COPY.runPanel.noArtifacts}</p> : null}
             {drawerArtifacts.map(({ artifact, ts }) => (
               <article key={artifact.artifactId} className="workflow-drawer-artifact-item">
                 <header>
@@ -989,8 +1121,8 @@ export const TopicPage = () => {
                   {ts > 0 ? <span className="muted">{formatEventTime(ts)}</span> : null}
                 </header>
                 <div className="workflow-drawer-artifact-actions">
-                  <button type="button" onClick={() => void openArtifactPreview(artifact)}>Preview</button>
-                  <button type="button" onClick={() => void handleArtifactDownload(artifact)}>Download</button>
+                  <button type="button" onClick={() => void openArtifactPreview(artifact)}>{APP_COPY.common.preview}</button>
+                  <button type="button" onClick={() => void handleArtifactDownload(artifact)}>{APP_COPY.common.download}</button>
                 </div>
               </article>
             ))}
@@ -1001,51 +1133,51 @@ export const TopicPage = () => {
       {activeTab === "context" ? (
         <section className="workflow-context-panel">
           <article className="workflow-context-card">
-            <h4>Topic Prompt</h4>
-            <p>{topicPrompt || "No prompt recorded for this topic."}</p>
+            <h4>{APP_COPY.runs.topicPromptTitle}</h4>
+            <p>{topicPrompt || APP_COPY.runs.noPromptRecorded}</p>
           </article>
 
           <article className="workflow-context-card">
-            <h4>Run Status</h4>
+            <h4>{APP_COPY.runs.runStatusTitle}</h4>
             <div className="workflow-context-grid">
               <div>
-                <span className="muted">status</span>
-                <strong>{runDetail?.status ?? "idle"}</strong>
+                <span className="muted">{APP_COPY.runs.statusPrefix}</span>
+                <strong>{formatRunStatusLabel(runDetail?.status ?? "idle")}</strong>
               </div>
               <div>
-                <span className="muted">current module</span>
-                <strong>{runDetail?.currentModule ?? "-"}</strong>
+                <span className="muted">{APP_COPY.runs.currentModuleField}</span>
+                <strong>{runDetail?.currentModule ?? APP_COPY.common.none}</strong>
               </div>
               <div>
-                <span className="muted">awaiting approval</span>
-                <strong>{runDetail?.awaitingApproval ? "true" : "false"}</strong>
+                <span className="muted">{APP_COPY.runs.awaitingApprovalField}</span>
+                <strong>{formatBooleanLabel(Boolean(runDetail?.awaitingApproval))}</strong>
               </div>
               <div>
-                <span className="muted">awaiting module</span>
-                <strong>{runDetail?.awaitingModule ?? "-"}</strong>
+                <span className="muted">{APP_COPY.runs.awaitingModuleField}</span>
+                <strong>{runDetail?.awaitingModule ?? APP_COPY.common.none}</strong>
               </div>
             </div>
           </article>
 
           <article className="workflow-context-card">
-            <h4>Run Config Summary</h4>
+            <h4>{APP_COPY.runs.runConfigSummary}</h4>
             {configForContext ? (
               <>
                 <div className="workflow-context-grid">
                   <div>
-                    <span className="muted">thinking mode</span>
+                    <span className="muted">{APP_COPY.workflowSettings.thinkingMode}</span>
                     <strong>{configForContext.thinkingMode}</strong>
                   </div>
                   <div>
-                    <span className="muted">selected agents</span>
-                    <strong>{(configForContext.selectedAgents ?? []).join(", ") || "-"}</strong>
+                    <span className="muted">{APP_COPY.runs.selectedAgents}</span>
+                    <strong>{(configForContext.selectedAgents ?? []).join(", ") || APP_COPY.common.none}</strong>
                   </div>
                   <div>
-                    <span className="muted">network</span>
-                    <strong>{configForContext.online ? "online" : "offline"}</strong>
+                    <span className="muted">{APP_COPY.runs.network}</span>
+                    <strong>{formatOnlineLabel(configForContext.online)}</strong>
                   </div>
                   <div>
-                    <span className="muted">preset</span>
+                    <span className="muted">{APP_COPY.workflowSettings.preset}</span>
                     <strong>{configForContext.presetName}</strong>
                   </div>
                 </div>
@@ -1054,10 +1186,10 @@ export const TopicPage = () => {
                     const moduleConfig = configForContext.modules[agentId];
                     return (
                       <div key={agentId} className="workflow-context-module-item">
-                        <h5>{agentId}</h5>
-                        <p>enabled: {moduleConfig.enabled ? "true" : "false"}</p>
-                        <p>model: {moduleConfig.model}</p>
-                        <p>requireHuman: {moduleConfig.requireHuman ? "true" : "false"}</p>
+                        <h5>{formatAgentLabel(agentId)}</h5>
+                        <p>{APP_COPY.workflowSettings.enabled}: {formatBooleanLabel(moduleConfig.enabled)}</p>
+                        <p>{APP_COPY.workflowSettings.model}: {moduleConfig.model}</p>
+                        <p>{APP_COPY.workflowSettings.requireHuman}: {formatBooleanLabel(moduleConfig.requireHuman)}</p>
                         {moduleConfig.idea_taste_mode ? <p>idea_taste_mode: {moduleConfig.idea_taste_mode}</p> : null}
                       </div>
                     );
@@ -1065,7 +1197,7 @@ export const TopicPage = () => {
                 </div>
               </>
             ) : (
-              <p className="muted">Using default config.</p>
+              <p className="muted">{APP_COPY.runs.usingDefaultConfig}</p>
             )}
           </article>
         </section>
@@ -1078,102 +1210,185 @@ export const TopicPage = () => {
     const classicEvents = selectedRunId ? events.filter((event) => event.runId === selectedRunId) : events;
 
     return (
-      <section className="topic-page">
-        <header className="topic-topbar">
-          <div className="topic-topbar-meta">
-            <span className="topic-topbar-label">Workflow Builder</span>
-            <h2>{headerTitle}</h2>
-            <div className="topic-topbar-statusline">
-              <span>status: {topic?.status ?? fallbackTopic?.status ?? "unknown"}</span>
-              <span className={`ws-state ws-${wsStatus} ${wsStatusTransitioning ? "ws-state-transition" : ""}`}>
-                WS: {wsStatusLabel}
-              </span>
-              {selectedRunId ? <span>run: {selectedRunId}</span> : null}
-              <span className={`status-badge ${toRunStatusClass(runStatus)}`}>{runStatus}</span>
+      <section className="topic-page run-workbench-page">
+        <header className="console-topbar">
+          <div className="console-topbar-main">
+            <div className="console-topbar-brand">
+              <span className="console-topbar-title">Research Workspace</span>
             </div>
+            <nav className="console-topbar-nav" aria-label="Workspace view">
+              <button
+                type="button"
+                className={classicPrimaryTab === "pipeline" ? "active" : ""}
+                onClick={() => setClassicTab("pipeline")}
+              >
+                Pipeline
+              </button>
+              <button
+                type="button"
+                className={classicPrimaryTab === "chat" ? "active" : ""}
+                onClick={() => setClassicTab("chat")}
+              >
+                Chat
+              </button>
+              <button
+                type="button"
+                className={classicPrimaryTab === "trace" ? "active" : ""}
+                onClick={() => setClassicTab("trace")}
+              >
+                Trace
+              </button>
+            </nav>
           </div>
-          <div className="topic-topbar-actions">
-            <button type="button" onClick={() => openDrawer("log")}>Open Drawer</button>
-            <button type="button" className="run-button" onClick={() => void handleStartRun({ allowTopicFallbackPrompt: true })} disabled={submittingRun || loadingSnapshot || loadingRunConfig}>
-              {submittingRun ? "Running..." : "Run"}
+          <div className="console-topbar-actions">
+            <button type="button" className="console-topbar-back" onClick={handleBackToHome}>
+              <span className="material-symbols-outlined">arrow_back</span>
+              返回首页
             </button>
-            <ThemeToggle />
+            <label className="console-topbar-search" aria-label="Search parameters">
+              <span className="material-symbols-outlined">search</span>
+              <input
+                type="text"
+                value={workspaceSearch}
+                onChange={(event) => setWorkspaceSearch(event.target.value)}
+                placeholder="搜索当前运行内容..."
+              />
+            </label>
           </div>
         </header>
+
+        <div className="px-10 pt-10 pb-8">
+          <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-12">
+            <div className="max-w-2xl">
+              <div className="flex items-center gap-3 mb-3">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-tertiary-container text-on-tertiary-container text-xs font-bold uppercase tracking-wider">
+                  <span className="w-2 h-2 rounded-full bg-tertiary animate-pulse" />
+                  RUNNING
+                </span>
+                <span className="text-sm text-on-surface-variant">
+                  Task ID: {selectedRunId ?? "RA-9921-X"}
+                </span>
+              </div>
+              <h2 className="text-4xl font-bold tracking-tight text-on-surface mb-2">{headerTitle}</h2>
+              <p className="text-body-lg text-on-surface-variant leading-relaxed">
+                {topic?.description || topic?.objective || "Systematic analysis of architecture parameters, latency benchmarks, and MoE optimization techniques for large-scale deployment."}
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button type="button" className="px-6 py-2.5 rounded-full border border-outline-variant/30 font-semibold text-on-surface hover:bg-surface-container transition-all flex items-center gap-2 bg-white/70" onClick={() => void handleShareRun()}>
+                <span className="material-symbols-outlined text-lg">share</span>
+                Share
+              </button>
+              <button type="button" className="px-6 py-2.5 rounded-full border border-outline-variant/30 font-semibold text-on-surface hover:bg-surface-container transition-all flex items-center gap-2 bg-white/70" onClick={() => openDrawer("log")}>
+                <span className="material-symbols-outlined text-lg">terminal</span>
+                View Logs
+              </button>
+              <button type="button" className="px-6 py-2.5 rounded-full bg-error text-white font-bold hover:bg-[#9f0519] transition-all shadow-lg shadow-error/10 flex items-center gap-2 border-0" onClick={handleStopUnavailable}>
+                <span className="material-symbols-outlined text-lg">stop_circle</span>
+                Stop Task
+              </button>
+            </div>
+          </div>
+        </div>
 
         {error ? <div className="error-banner">{error}</div> : null}
         {promptError ? <div className="error-banner">{promptError}</div> : null}
 
-        <div className="topic-view-tabs">
+        <div className="topic-view-tabs topic-view-tabs-secondary">
           <div className="topic-view-tabs-left">
             <button
               type="button"
               className={classicPrimaryTab === "chat" ? "active" : ""}
               onClick={() => setClassicTab("chat")}
             >
-              Chat
+              {APP_COPY.runs.chatTab}
             </button>
             <button
               type="button"
               className={classicPrimaryTab === "pipeline" ? "active" : ""}
               onClick={() => setClassicTab("pipeline")}
             >
-              Pipeline
+              {APP_COPY.runs.pipelineTab}
             </button>
             <button
               type="button"
               className={classicPrimaryTab === "trace" ? "active" : ""}
               onClick={() => setClassicTab("trace")}
             >
-              Trace
+              {APP_COPY.runs.traceTab}
             </button>
           </div>
           <div className="topic-view-tabs-right">
-            {selectedRunId ? <span className="trace-run-id">Run: {selectedRunId}</span> : null}
+            {selectedRunId ? <span className="trace-run-id">{APP_COPY.runs.runPrefix}: {selectedRunId}</span> : null}
           </div>
         </div>
 
         {(approvalSummary || (runDetail?.awaitingApproval && awaitingModule)) ? (
           <section className="workflow-approval-card">
-            <h3>Approval Required</h3>
-            <p>{approvalSummary ?? "This module is waiting for manual approval."}</p>
-            {awaitingModule ? <p className="muted">module: {awaitingModule}</p> : null}
+            <h3>{APP_COPY.runs.approvalRequired}</h3>
+            <p>{approvalSummary ?? APP_COPY.runs.approvalWaitingDesc}</p>
+            {awaitingModule ? <p className="muted">{APP_COPY.runs.moduleField}: {awaitingModule}</p> : null}
             <textarea
               value={approvalNote}
               onChange={(event) => setApprovalNote(event.target.value)}
-              placeholder="Optional note"
+              placeholder={APP_COPY.common.optionalNote}
               rows={2}
               disabled={approving}
             />
             <div className="workflow-approval-actions">
               <button type="button" disabled={approving} onClick={() => void handleApproveRun(true)}>
-                {approving ? "Submitting..." : "Approve"}
+                {approving ? APP_COPY.common.submitting : APP_COPY.common.approve}
               </button>
               <button type="button" className="danger-button" disabled={approving} onClick={() => void handleApproveRun(false)}>
-                {approving ? "Submitting..." : "Reject"}
+                {approving ? APP_COPY.common.submitting : APP_COPY.common.reject}
               </button>
             </div>
             {runError ? <p className="form-error">{runError}</p> : null}
           </section>
         ) : null}
 
-        {classicPrimaryTab === "chat" ? (
+        {classicPrimaryTab === "pipeline" ? (
+          <div className="run-workbench-functional-grid">
+            <section className="run-workbench-functional-panel topic-flow-panel">
+              <header className="panel-header">
+                <div className="panel-header-main">
+                  <h3>{APP_COPY.runs.pipelineTab}</h3>
+                  <span className="panel-header-subtitle">查看当前 agent 流程与子任务状态</span>
+                </div>
+                <div className="workflow-feed-actions">
+                  <button type="button" onClick={() => openDrawer("context")}>{APP_COPY.common.context}</button>
+                  <button type="button" onClick={() => openDrawer("log")}>{APP_COPY.common.openDrawer}</button>
+                </div>
+              </header>
+              <FlowCanvas
+                agentsStatus={agentsStatus}
+                agentSubtasks={agentSubtasks}
+                enabledAgents={pipelineAgents}
+                onSelectAgent={handleSelectAgent}
+              />
+            </section>
+
+            <aside className="run-workbench-functional-panel run-workbench-event-panel">
+              <EventFeed events={workspaceFilteredEvents.slice(-48)} />
+            </aside>
+          </div>
+        ) : classicPrimaryTab === "chat" ? (
           <section className="workflow-feed workflow-feed-chat">
             <header className="workflow-feed-header">
               <div>
-                <h3>Run Chat</h3>
-                <p>Task prompt and system progress in one conversation stream</p>
+                <h3>{APP_COPY.runs.runChatTitle}</h3>
+                <p>{APP_COPY.runs.runChatDesc}</p>
               </div>
               <div className="workflow-feed-actions">
-                <button type="button" onClick={() => openDrawer("artifacts")}>Artifacts</button>
-                <button type="button" onClick={() => openDrawer("context")}>Context</button>
+                <button type="button" onClick={() => openDrawer("artifacts")}>{APP_COPY.common.artifacts}</button>
+                <button type="button" onClick={() => openDrawer("context")}>{APP_COPY.common.context}</button>
               </div>
             </header>
 
             <div className="workflow-feed-list">
               <RunMessageStream
                 taskPrompt={streamTaskPrompt}
-                events={logSourceEvents}
+                events={workspaceFilteredEvents}
                 awaitingModule={awaitingModule}
                 approvalSummary={approvalSummary}
                 approvalNote={approvalNote}
@@ -1186,24 +1401,12 @@ export const TopicPage = () => {
               />
             </div>
           </section>
-        ) : classicPrimaryTab === "pipeline" ? (
-          <div className="topic-workspace">
-            <section className="topic-flow-panel">
-              <FlowCanvas
-                agentsStatus={agentsStatus}
-                agentSubtasks={agentSubtasks}
-                enabledAgents={pipelineAgents}
-                onSelectAgent={handleSelectAgent}
-              />
-            </section>
-            <EventFeed events={classicEvents} />
-          </div>
         ) : (
           <section className="topic-trace-panel">
             <WorkflowTracePanel
               traceView={traceView}
               onTraceViewChange={setTraceView}
-              traceItems={traceItems}
+              traceItems={workspaceFilteredTraceItems}
               artifacts={runArtifacts}
               loading={loadingTrace}
               error={traceError}
@@ -1211,6 +1414,33 @@ export const TopicPage = () => {
             />
           </section>
         )}
+
+        <section className="workspace-followup run-workbench-followup">
+          <form
+            className="workspace-followup-bar"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleStartRun({ allowTopicFallbackPrompt: true });
+            }}
+          >
+            <button type="button" className="workspace-followup-icon" aria-label="Attach file">+</button>
+            <input
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="Ask follow-up questions or redirect the research..."
+            />
+            <div className="workspace-followup-actions">
+              <button type="button" className="workspace-followup-icon" aria-label="Microphone">o</button>
+              <button
+                type="submit"
+                className="workspace-followup-submit"
+                disabled={submittingRun || loadingSnapshot || loadingRunConfig}
+              >
+                {">"}
+              </button>
+            </div>
+          </form>
+        </section>
 
         <WorkflowDrawer
           open={drawerOpen}
@@ -1233,17 +1463,17 @@ export const TopicPage = () => {
         />
 
         {artifactModalOpen ? (
-          <div className="artifact-modal-overlay" role="dialog" aria-label="Artifact preview">
+          <div className="artifact-modal-overlay" role="dialog" aria-label={APP_COPY.runs.artifactPreviewAria}>
             <div className="artifact-modal" onClick={(event) => event.stopPropagation()}>
               <header className="artifact-modal-header">
                 <div>
-                  <h4>{artifactModalTitle || "Artifact"}</h4>
+                  <h4>{artifactModalTitle || APP_COPY.runs.artifactFallbackTitle}</h4>
                   <p className="muted">{artifactModalType}</p>
                 </div>
-                <button type="button" onClick={closeArtifactPreview}>Close</button>
+                <button type="button" onClick={closeArtifactPreview}>{APP_COPY.common.close}</button>
               </header>
               <div className="artifact-modal-body">
-                {artifactModalLoading ? <p>Loading artifact...</p> : null}
+                {artifactModalLoading ? <p>{APP_COPY.common.loadingArtifact}</p> : null}
                 {!artifactModalLoading && artifactModalError ? <p className="form-error">{artifactModalError}</p> : null}
                 {!artifactModalLoading && !artifactModalError ? (
                   <ArtifactContentView contentType={artifactModalType} content={artifactModalContent} artifactName={artifactModalTitle} />
@@ -1258,20 +1488,21 @@ export const TopicPage = () => {
   }
 
   return (
-    <section className="workflow-page">
+    <section className="workflow-page run-workbench-page">
       <header className="workflow-header">
         <div className="workflow-header-main">
-          <span className="workflow-header-label">Workflow</span>
+          <span className="workflow-header-label">{APP_COPY.runs.topbarLabel}</span>
           <h2>{headerTitle}</h2>
           <div className="workflow-status-row">
-            <span>status: {topic?.status ?? fallbackTopic?.status ?? "unknown"}</span>
-            <span className={`ws-state ws-${wsStatus}`}>WS: {wsStatus}</span>
-            {selectedRunId ? <span>run: {selectedRunId}</span> : null}
+            <span>{APP_COPY.runs.statusPrefix}: {formatTopicStatusLabel(topic?.status ?? fallbackTopic?.status ?? "unknown")}</span>
+            <span className={`ws-state ws-${wsStatus}`}>{APP_COPY.runs.wsPrefix}: {wsStatusLabel}</span>
+            {selectedRunId ? <span>{APP_COPY.runs.runPrefix}: {selectedRunId}</span> : null}
           </div>
         </div>
         <div className="workflow-header-actions">
-          <button type="button" onClick={openClassicTraceView}>Trace View</button>
-          <button type="button" onClick={() => openDrawer("log")}>Open Drawer</button>
+          <button type="button" className="back-home-button" onClick={handleBackToHome}>{APP_COPY.common.backHome}</button>
+          <button type="button" onClick={openClassicTraceView}>{APP_COPY.runs.traceViewButton}</button>
+          <button type="button" onClick={() => openDrawer("log")}>{APP_COPY.common.openDrawer}</button>
           <ThemeToggle />
         </div>
       </header>
@@ -1290,28 +1521,28 @@ export const TopicPage = () => {
           />
 
           <section className="workflow-run-strip">
-            <span className={`status-badge ${toRunStatusClass(runStatus)}`}>{runStatus}</span>
-            <span>current: {runDetail?.currentModule ?? "-"}</span>
-            <span>events: {feedEvents.length}</span>
-            <span>artifacts: {runArtifacts.length}</span>
+            <span className={`status-badge ${toRunStatusClass(runStatus)}`}>{formatRunStatusLabel(runStatus)}</span>
+            <span>{APP_COPY.runs.currentPrefix}: {runDetail?.currentModule ?? APP_COPY.common.none}</span>
+            <span>{APP_COPY.runs.eventCountPrefix}: {feedEvents.length}</span>
+            <span>{APP_COPY.runs.artifactCountPrefix}: {runArtifacts.length}</span>
           </section>
 
           <section className="workflow-feed">
             <header className="workflow-feed-header">
               <div>
-                <h3>Run Feed</h3>
-                <p>Progress and results in one stream</p>
+                <h3>{APP_COPY.runs.runFeedTitle}</h3>
+                <p>{APP_COPY.runs.runFeedDesc}</p>
               </div>
               <div className="workflow-feed-actions">
-                <button type="button" onClick={() => openDrawer("artifacts")}>Artifacts</button>
-                <button type="button" onClick={() => openDrawer("context")}>Context</button>
+                <button type="button" onClick={() => openDrawer("artifacts")}>{APP_COPY.common.artifacts}</button>
+                <button type="button" onClick={() => openDrawer("context")}>{APP_COPY.common.context}</button>
               </div>
             </header>
 
             <div className="workflow-feed-list">
               <RunMessageStream
                 taskPrompt={streamTaskPrompt}
-                events={logSourceEvents}
+                events={workspaceFilteredEvents}
                 awaitingModule={awaitingModule}
                 approvalSummary={approvalSummary}
                 approvalNote={approvalNote}
@@ -1348,17 +1579,17 @@ export const TopicPage = () => {
       />
 
       {artifactModalOpen ? (
-        <div className="artifact-modal-overlay" role="dialog" aria-label="Artifact preview">
+        <div className="artifact-modal-overlay" role="dialog" aria-label={APP_COPY.runs.artifactPreviewAria}>
           <div className="artifact-modal" onClick={(event) => event.stopPropagation()}>
             <header className="artifact-modal-header">
               <div>
                 <h4>{artifactModalTitle || "Artifact"}</h4>
                 <p className="muted">{artifactModalType}</p>
               </div>
-              <button type="button" onClick={closeArtifactPreview}>Close</button>
+              <button type="button" onClick={closeArtifactPreview}>{APP_COPY.common.close}</button>
             </header>
             <div className="artifact-modal-body">
-              {artifactModalLoading ? <p>Loading artifact...</p> : null}
+              {artifactModalLoading ? <p>{APP_COPY.common.loadingArtifact}</p> : null}
               {!artifactModalLoading && artifactModalError ? <p className="form-error">{artifactModalError}</p> : null}
               {!artifactModalLoading && !artifactModalError ? (
                 <ArtifactContentView contentType={artifactModalType} content={artifactModalContent} artifactName={artifactModalTitle} />
@@ -1371,3 +1602,4 @@ export const TopicPage = () => {
     </section>
   );
 };
+

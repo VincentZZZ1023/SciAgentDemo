@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+﻿import { useMemo, useState } from "react";
 import { fetchArtifactContent } from "../../api/client";
 import { ArtifactContentView } from "../artifact/ArtifactContentView";
 import {
@@ -9,6 +9,13 @@ import {
   type Message,
   type TraceItem,
 } from "../../types/events";
+import {
+  APP_COPY,
+  formatAgentLabel,
+  formatMessageRoleLabel,
+  formatModuleStatusLabel,
+  formatTraceKindLabel,
+} from "../../lib/copy";
 
 type AgentFilter = "all" | AgentId;
 type KindFilter = "all" | "message" | "artifact" | "status";
@@ -24,7 +31,7 @@ const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error) {
     return error.message;
   }
-  return "Request failed";
+  return APP_COPY.common.requestFailed;
 };
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -129,18 +136,18 @@ export const TraceTimeline = ({ items, artifacts, loading, error }: TraceTimelin
   return (
     <div className="trace-timeline">
       <header className="panel-header trace-header">
-        <h3>Trace Timeline</h3>
-        <span>{filteredItems.length} items</span>
+        <h3>{APP_COPY.trace.timelineTitle}</h3>
+        <span>{filteredItems.length} {APP_COPY.trace.itemsSuffix}</span>
       </header>
 
       <div className="trace-filters">
         <label>
-          Agent
+          {APP_COPY.trace.agentField}
           <select
             value={agentFilter}
             onChange={(event) => setAgentFilter(event.target.value as AgentFilter)}
           >
-            <option value="all">All</option>
+            <option value="all">{APP_COPY.runs.all}</option>
             <option value="review">review</option>
             <option value="ideation">ideation</option>
             <option value="experiment">experiment</option>
@@ -148,20 +155,20 @@ export const TraceTimeline = ({ items, artifacts, loading, error }: TraceTimelin
         </label>
 
         <label>
-          Kind
+          {APP_COPY.trace.kindField}
           <select value={kindFilter} onChange={(event) => setKindFilter(event.target.value as KindFilter)}>
-            <option value="all">All</option>
-            <option value="message">message</option>
-            <option value="artifact">artifact</option>
-            <option value="status">status</option>
+            <option value="all">{APP_COPY.runs.all}</option>
+            <option value="message">{formatTraceKindLabel("message")}</option>
+            <option value="artifact">{formatTraceKindLabel("artifact")}</option>
+            <option value="status">{formatTraceKindLabel("status")}</option>
           </select>
         </label>
       </div>
 
       <div className="trace-list">
-        {loading ? <p className="muted">Loading trace...</p> : null}
+        {loading ? <p className="muted">{APP_COPY.common.loadingTrace}</p> : null}
         {!loading && error ? <p className="form-error">{error}</p> : null}
-        {!loading && !error && filteredItems.length === 0 ? <p className="muted">No trace items</p> : null}
+        {!loading && !error && filteredItems.length === 0 ? <p className="muted">{APP_COPY.trace.noTrace}</p> : null}
 
         {!loading && !error
           ? filteredItems.map((item) => {
@@ -176,8 +183,8 @@ export const TraceTimeline = ({ items, artifacts, loading, error }: TraceTimelin
                 <article key={item.id} className="trace-item">
                   <header>
                     <div className="trace-meta">
-                      <span className="event-badge">{item.agentId}</span>
-                      <span className="event-badge event-badge-kind">{item.kind}</span>
+                      <span className="event-badge">{formatAgentLabel(item.agentId)}</span>
+                      <span className="event-badge event-badge-kind">{formatTraceKindLabel(item.kind)}</span>
                       <span className="event-time">{new Date(item.ts).toLocaleString()}</span>
                     </div>
                   </header>
@@ -185,7 +192,7 @@ export const TraceTimeline = ({ items, artifacts, loading, error }: TraceTimelin
                   {item.kind === "message" ? (
                     <div className="trace-message">
                       <p>
-                        <strong>{message?.role ?? "assistant"}:</strong>{" "}
+                        <strong>{message ? formatMessageRoleLabel(message.role) : formatMessageRoleLabel("assistant")}:</strong>{" "}
                         {isExpanded ? content : shortContent}
                       </p>
                       {content.length > 180 ? (
@@ -199,7 +206,7 @@ export const TraceTimeline = ({ items, artifacts, loading, error }: TraceTimelin
                             }))
                           }
                         >
-                          {isExpanded ? "Collapse" : "Expand"}
+                          {isExpanded ? APP_COPY.trace.collapse : APP_COPY.trace.expand}
                         </button>
                       ) : null}
                     </div>
@@ -214,7 +221,7 @@ export const TraceTimeline = ({ items, artifacts, loading, error }: TraceTimelin
                           className="trace-link-button"
                           onClick={() => void openArtifactPreview(artifact)}
                         >
-                          Preview
+                          {APP_COPY.common.preview}
                         </button>
                       ) : null}
                     </div>
@@ -222,7 +229,7 @@ export const TraceTimeline = ({ items, artifacts, loading, error }: TraceTimelin
 
                   {item.kind === "status" ? (
                     <p>
-                      <strong>Status:</strong> {status ?? "unknown"} - {item.summary}
+                      <strong>{APP_COPY.trace.statusField}:</strong> {status ? formatModuleStatusLabel(status) : APP_COPY.common.unknown} - {item.summary}
                     </p>
                   ) : null}
 
@@ -243,7 +250,7 @@ export const TraceTimeline = ({ items, artifacts, loading, error }: TraceTimelin
                         }
                       }}
                     >
-                      Try preview
+                      {APP_COPY.trace.tryPreview}
                     </button>
                   ) : null}
                 </article>
@@ -253,20 +260,20 @@ export const TraceTimeline = ({ items, artifacts, loading, error }: TraceTimelin
       </div>
 
       {artifactModalOpen ? (
-        <div className="artifact-modal-overlay" role="dialog" aria-label="Trace artifact modal">
+        <div className="artifact-modal-overlay" role="dialog" aria-label={APP_COPY.trace.traceArtifactModalAria}>
           <div className="artifact-modal" onClick={(event) => event.stopPropagation()}>
             <header className="artifact-modal-header">
               <div>
-                <h4>{selectedArtifactName || "Artifact"}</h4>
+                <h4>{selectedArtifactName || APP_COPY.runs.artifactFallbackTitle}</h4>
                 <p className="muted">{artifactContentType}</p>
               </div>
               <button type="button" onClick={closeArtifactPreview}>
-                Close
+                {APP_COPY.common.close}
               </button>
             </header>
 
             <div className="artifact-modal-body">
-              {artifactLoading ? <p>Loading artifact...</p> : null}
+              {artifactLoading ? <p>{APP_COPY.common.loadingArtifact}</p> : null}
               {!artifactLoading && artifactError ? <p className="form-error">{artifactError}</p> : null}
               {!artifactLoading && !artifactError ? (
                 <ArtifactContentView

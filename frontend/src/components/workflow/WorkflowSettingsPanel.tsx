@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { RUN_MODEL_OPTIONS } from "../run/RunConfigBar";
 import { applyModePreset, cloneRunConfig, runConfigToMode, sanitizeRunConfig, type RunMode } from "../../lib/runConfig";
 import { AGENT_IDS, type AgentId, type ModuleConfig, type RunConfig } from "../../types/events";
+import {
+  APP_COPY,
+  formatAgentLabel,
+  formatModeHint,
+  formatModeLabel,
+  formatOnOffLabel,
+} from "../../lib/copy";
 
 interface WorkflowSettingsPanelProps {
   config: RunConfig | null;
@@ -13,12 +20,8 @@ interface WorkflowSettingsPanelProps {
   onDraftChange?: (draftConfig: RunConfig) => void;
 }
 
-const formatAgentLabel = (agentId: AgentId): string => {
-  return agentId.charAt(0).toUpperCase() + agentId.slice(1);
-};
-
 const formatBoolean = (value: boolean): string => {
-  return value ? "On" : "Off";
+  return formatOnOffLabel(value);
 };
 
 const getBaseConfig = (config: RunConfig | null, defaultConfig: RunConfig | null): RunConfig | null => {
@@ -113,8 +116,8 @@ export const WorkflowSettingsPanel = ({
   if (loading && !effectiveConfig) {
     return (
       <section className="workflow-settings-panel">
-        <h4>Run Config</h4>
-        <p className="muted">Loading config...</p>
+        <h4>{APP_COPY.workflowSettings.title}</h4>
+        <p className="muted">{APP_COPY.workflowSettings.loading}</p>
       </section>
     );
   }
@@ -122,8 +125,8 @@ export const WorkflowSettingsPanel = ({
   if (!effectiveConfig) {
     return (
       <section className="workflow-settings-panel">
-        <h4>Run Config</h4>
-        <p className="muted">Using default config</p>
+        <h4>{APP_COPY.workflowSettings.title}</h4>
+        <p className="muted">{APP_COPY.workflowSettings.usingDefault}</p>
       </section>
     );
   }
@@ -134,8 +137,8 @@ export const WorkflowSettingsPanel = ({
     return (
       <section className="run-config-bar workflow-settings-panel">
         <div className="run-config-head">
-          <h3>Run Config</h3>
-          <span className="workflow-settings-tag">Edit mode</span>
+          <h3>{APP_COPY.workflowSettings.title}</h3>
+          <span className="workflow-settings-tag">{APP_COPY.workflowSettings.editMode}</span>
         </div>
 
         <div className="workflow-settings-mode-toggle">
@@ -144,31 +147,34 @@ export const WorkflowSettingsPanel = ({
             className={mode === "quick" ? "active" : ""}
             onClick={() => handleModeChange("quick")}
             disabled={applying}
+            title={formatModeHint("quick")}
           >
-            Quick
+            {formatModeLabel("quick")}
           </button>
           <button
             type="button"
             className={mode === "deep" ? "active" : ""}
             onClick={() => handleModeChange("deep")}
             disabled={applying}
+            title={formatModeHint("deep")}
           >
-            Deep
+            {formatModeLabel("deep")}
           </button>
           <button
             type="button"
             className={mode === "pro" ? "active" : ""}
             onClick={() => handleModeChange("pro")}
             disabled={applying}
+            title={formatModeHint("pro")}
           >
-            Pro
+            {formatModeLabel("pro")}
           </button>
         </div>
 
         <div className="run-config-top-row">
           <div className="run-config-pill-group">
             <label className="run-config-pill">
-              Thinking Mode
+              {APP_COPY.workflowSettings.thinkingMode}
               <select
                 value={displayConfig.thinkingMode}
                 onChange={(event) =>
@@ -199,11 +205,11 @@ export const WorkflowSettingsPanel = ({
                 }
                 disabled={applying}
               />
-              <span>Online</span>
+              <span>{APP_COPY.workflowSettings.network}</span>
             </label>
           </div>
           <button type="button" className="run-config-reset" onClick={handleReset} disabled={applying}>
-            Restore Default
+            {APP_COPY.workflowSettings.restoreDefault}
           </button>
         </div>
 
@@ -221,12 +227,12 @@ export const WorkflowSettingsPanel = ({
                       onChange={(event) => updateModule(agentId, { enabled: event.target.checked })}
                       disabled={applying}
                     />
-                    <span>Enabled</span>
+                    <span>{APP_COPY.workflowSettings.enabled}</span>
                   </label>
                 </header>
 
                 <label>
-                  Model
+                  {APP_COPY.workflowSettings.model}
                   <select
                     value={moduleConfig.model}
                     onChange={(event) => updateModule(agentId, { model: event.target.value })}
@@ -250,7 +256,7 @@ export const WorkflowSettingsPanel = ({
                     onChange={(event) => updateModule(agentId, { requireHuman: event.target.checked })}
                     disabled={applying}
                   />
-                  <span>Require Human</span>
+                  <span>{APP_COPY.workflowSettings.requireHuman}</span>
                 </label>
               </article>
             );
@@ -259,10 +265,10 @@ export const WorkflowSettingsPanel = ({
 
         <div className="workflow-settings-actions">
           <button type="button" onClick={() => setEditing(false)} disabled={applying}>
-            Cancel
+            {APP_COPY.workflowSettings.cancel}
           </button>
           <button type="button" className="run-button" onClick={() => void handleApply()} disabled={applying}>
-            {applying ? "Applying..." : "Apply & Run"}
+            {applying ? APP_COPY.workflowSettings.applying : APP_COPY.workflowSettings.applyAndRun}
           </button>
         </div>
         {error ? <p className="form-error">{error}</p> : null}
@@ -273,25 +279,25 @@ export const WorkflowSettingsPanel = ({
   return (
     <section className="workflow-settings-panel">
       <div className="workflow-settings-header">
-        <h4>Run Config</h4>
-        <span className="workflow-settings-tag">Read only</span>
+        <h4>{APP_COPY.workflowSettings.title}</h4>
+        <span className="workflow-settings-tag">{APP_COPY.workflowSettings.readOnly}</span>
       </div>
 
       <div className="workflow-settings-grid">
         <article className="workflow-settings-item">
-          <span className="muted">Thinking Mode</span>
+          <span className="muted">{APP_COPY.workflowSettings.thinkingMode}</span>
           <strong>{displayConfig.thinkingMode}</strong>
         </article>
         <article className="workflow-settings-item">
-          <span className="muted">Mode</span>
+          <span className="muted">{APP_COPY.workflowSettings.mode}</span>
           <strong>{runConfigToMode(displayConfig)}</strong>
         </article>
         <article className="workflow-settings-item">
-          <span className="muted">Network</span>
+          <span className="muted">{APP_COPY.workflowSettings.network}</span>
           <strong>{formatBoolean(displayConfig.online)}</strong>
         </article>
         <article className="workflow-settings-item">
-          <span className="muted">Preset</span>
+          <span className="muted">{APP_COPY.workflowSettings.preset}</span>
           <strong>{displayConfig.presetName || "default"}</strong>
         </article>
       </div>
@@ -308,14 +314,14 @@ export const WorkflowSettingsPanel = ({
               <header>
                 <h5>{formatAgentLabel(agentId)}</h5>
                 <span className={`status-badge ${moduleConfig.enabled ? "status-running" : "status-idle"}`}>
-                  {moduleConfig.enabled ? "enabled" : "disabled"}
+                  {moduleConfig.enabled ? APP_COPY.workflowSettings.enabled : APP_COPY.workflowSettings.disabled}
                 </span>
               </header>
               <p>
-                <span className="muted">Model:</span> {moduleConfig.model}
+                <span className="muted">{APP_COPY.workflowSettings.model}:</span> {moduleConfig.model}
               </p>
               <p>
-                <span className="muted">Require Human:</span> {formatBoolean(moduleConfig.requireHuman)}
+                <span className="muted">{APP_COPY.workflowSettings.requireHuman}:</span> {formatBoolean(moduleConfig.requireHuman)}
               </p>
             </article>
           );
@@ -324,7 +330,7 @@ export const WorkflowSettingsPanel = ({
 
       <div className="workflow-settings-actions">
         <button type="button" onClick={() => setEditing(true)}>
-          Edit
+          {APP_COPY.workflowSettings.edit}
         </button>
       </div>
       {error ? <p className="form-error">{error}</p> : null}

@@ -192,6 +192,7 @@ export interface AgentStatus {
 export interface TopicSummary {
   topicId: string;
   title: string;
+  historyTitle?: string | null;
   status: string;
   createdAt: number;
   updatedAt: number;
@@ -215,6 +216,7 @@ export interface SnapshotResponse {
   activeRun?: {
     runId: string;
     topicId: string;
+    historyTitle?: string | null;
     status: string;
     createdAt: number;
     startedAt?: number | null;
@@ -229,6 +231,7 @@ export interface SnapshotResponse {
 export interface RunDetail {
   runId: string;
   topicId: string;
+  historyTitle?: string | null;
   status: string;
   createdAt: number;
   startedAt?: number | null;

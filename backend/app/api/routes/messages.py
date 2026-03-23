@@ -11,6 +11,7 @@ from app.models.schemas import (
     Severity,
 )
 from app.services.event_bus import event_bus
+from app.services.history_title_service import history_title_service
 from app.services.runner import build_event
 from app.store import store
 
@@ -88,6 +89,13 @@ async def create_messages(
         role=MessageRole.assistant,
         content=f"Echo: {payload.content}",
         run_id=run_id,
+    )
+
+    await history_title_service.maybe_generate_for_message_pair(
+        topic_id=topicId,
+        run_id=run_id,
+        user_text=payload.content,
+        assistant_text=str(assistant_message.get("content") or ""),
     )
 
     await _emit_message_created_event(

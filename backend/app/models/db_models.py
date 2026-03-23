@@ -14,6 +14,7 @@ class TopicTable(SQLModel, table=True):
 
     id: str = Field(primary_key=True, index=True)
     name: str = Field(index=True)
+    history_title: str | None = Field(default=None, index=True)
     description: str = ""
     objective: str = ""
     tags_json: str = "[]"
@@ -28,6 +29,7 @@ class RunTable(SQLModel, table=True):
 
     id: str = Field(primary_key=True, index=True)
     topic_id: str = Field(foreign_key="topics.id", index=True)
+    history_title: str | None = Field(default=None, index=True)
     status: str = Field(index=True)
     created_at: int = Field(index=True)
     started_at: int = Field(index=True)

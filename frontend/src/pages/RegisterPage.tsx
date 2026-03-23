@@ -64,7 +64,7 @@ export const RegisterPage = () => {
     <div className="login-page">
       <form className="login-card" onSubmit={handleSubmit}>
         <h1>Create Account</h1>
-        <p>Register and start using SciAgentDemo.</p>
+        <p>Register and start using xcientist.</p>
 
         <label>
           Email or Username

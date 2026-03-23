@@ -142,6 +142,7 @@ class DatabaseStore:
         return {
             "topicId": topic.id,
             "title": topic.name,
+            "historyTitle": topic.history_title,
             "description": topic.description,
             "objective": topic.objective,
             "tags": tags,
@@ -171,6 +172,7 @@ class DatabaseStore:
         return {
             "runId": run.id,
             "topicId": run.topic_id,
+            "historyTitle": run.history_title,
             "status": run.status,
             "createdAt": run.created_at,
             "startedAt": run.started_at,
@@ -326,6 +328,7 @@ class DatabaseStore:
         topic = TopicTable(
             id=f"topic-{uuid4().hex[:8]}",
             name=title,
+            history_title=None,
             description=description,
             objective=objective,
             tags_json=_json_dumps(tags or []),
@@ -367,6 +370,7 @@ class DatabaseStore:
                 run = RunTable(
                     id=run_id,
                     topic_id=topic_id,
+                    history_title=topic.history_title,
                     status="queued",
                     created_at=timestamp,
                     started_at=timestamp,
@@ -386,6 +390,7 @@ class DatabaseStore:
         return {
             "runId": run_id,
             "topicId": topic_id,
+            "historyTitle": topic.history_title,
             "status": "queued",
             "createdAt": timestamp,
             "startedAt": timestamp,
@@ -733,6 +738,38 @@ class DatabaseStore:
             "content": content,
             "ts": timestamp,
         }
+
+    async def set_history_title(
+        self,
+        *,
+        topic_id: str,
+        history_title: str,
+        run_id: str | None = None,
+    ) -> str:
+        normalized = history_title.strip()
+        if not normalized:
+            raise ValueError("history_title is required")
+
+        async with self._lock:
+            with SessionLocal() as session:
+                topic = session.get(TopicTable, topic_id)
+                if topic is None:
+                    raise KeyError(topic_id)
+
+                final_title = topic.history_title.strip() if isinstance(topic.history_title, str) and topic.history_title.strip() else normalized
+                if topic.history_title != final_title:
+                    topic.history_title = final_title
+                    session.add(topic)
+
+                if run_id:
+                    run = session.get(RunTable, run_id)
+                    if run is not None and run.topic_id == topic_id and run.history_title != final_title:
+                        run.history_title = final_title
+                        session.add(run)
+
+                session.commit()
+
+        return final_title
 
     async def get_trace(self, topic_id: str, *, run_id: str | None = None) -> dict:
         with SessionLocal() as session:

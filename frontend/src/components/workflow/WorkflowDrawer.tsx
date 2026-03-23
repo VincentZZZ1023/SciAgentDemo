@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+﻿import type { ReactNode } from "react";
 import { DrawerTabHeader, type DrawerTab } from "./DrawerTabHeader";
+import { APP_COPY } from "../../lib/copy";
 
 interface WorkflowDrawerProps {
   open: boolean;
@@ -25,7 +26,7 @@ export const WorkflowDrawer = ({
       <button
         type="button"
         className="workflow-drawer-backdrop"
-        aria-label="Close workflow drawer"
+        aria-label={APP_COPY.drawer.closeAria}
         onClick={onClose}
       />
 
@@ -33,16 +34,16 @@ export const WorkflowDrawer = ({
         className="workflow-drawer-panel"
         role="dialog"
         aria-modal="true"
-        aria-label="Workflow details"
+        aria-label={APP_COPY.drawer.dialogAria}
         onClick={(event) => event.stopPropagation()}
       >
         <header className="workflow-drawer-header">
           <div>
-            <h3>Workflow Details</h3>
-            <p className="muted">Log, artifacts, and run context</p>
+            <h3>{APP_COPY.drawer.title}</h3>
+            <p className="muted">{APP_COPY.drawer.subtitle}</p>
           </div>
           <button type="button" onClick={onClose}>
-            Close
+            {APP_COPY.common.close}
           </button>
         </header>
 

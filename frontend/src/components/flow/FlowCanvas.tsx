@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+﻿import { useEffect, useMemo, useRef } from "react";
 import {
   Background,
   Controls,
@@ -11,6 +11,7 @@ import {
 } from "@xyflow/react";
 import { useTheme } from "../../theme/ThemeProvider";
 import { AGENT_IDS, type AgentId, type AgentStatus, type AgentSubtask } from "../../types/events";
+import { APP_COPY, formatAgentLabel, formatModuleStatusLabel } from "../../lib/copy";
 
 interface FlowCanvasProps {
   agentsStatus: Record<AgentId, AgentStatus>;
@@ -159,12 +160,12 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, enabledAgents, onSelec
             <div className="flow-node-shell">
               <div className="flow-node-accent" />
               <div className="flow-node-title-row">
-                <strong className="flow-node-title">{agentId}</strong>
-                <span className={statusClass}>{agent.status}</span>
+                <strong className="flow-node-title">{formatAgentLabel(agentId)}</strong>
+                <span className={statusClass}>{formatModuleStatusLabel(agent.status)}</span>
               </div>
               <div className="flow-node-meta-row">
-                <span className="flow-node-progress">Progress: {progressText(agent.progress)}</span>
-                <span className="flow-node-subtask-count">{subtasks.length} subtasks</span>
+                <span className="flow-node-progress">{APP_COPY.flow.progress}: {progressText(agent.progress)}</span>
+                <span className="flow-node-subtask-count">{subtasks.length} {APP_COPY.flow.subtasksSuffix}</span>
               </div>
             </div>
           ),
@@ -204,7 +205,7 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, enabledAgents, onSelec
               <div className="flow-subtask-row">
                 <span className="flow-subtask-name">{subtask.name}</span>
                 <span className={`flow-subtask-badge subtask-${subtaskStatus}`}>
-                  {subtask.status} {Math.round(progress * 100)}%
+                  {formatModuleStatusLabel(subtask.status)} {Math.round(progress * 100)}%
                 </span>
               </div>
             ),
@@ -239,10 +240,10 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, enabledAgents, onSelec
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      flowInstanceRef.current?.fitView({ padding: 0.2, duration: 180 });
+      flowInstanceRef.current?.fitView({ padding: 0.18, duration: 180 });
     });
     const timer = window.setTimeout(() => {
-      flowInstanceRef.current?.fitView({ padding: 0.2, duration: 0 });
+      flowInstanceRef.current?.fitView({ padding: 0.18, duration: 0 });
     }, 300);
 
     return () => {
@@ -258,7 +259,7 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, enabledAgents, onSelec
     }
 
     const observer = new ResizeObserver(() => {
-      flowInstanceRef.current?.fitView({ padding: 0.2, duration: 0 });
+      flowInstanceRef.current?.fitView({ padding: 0.18, duration: 0 });
     });
 
     observer.observe(container);
@@ -268,36 +269,38 @@ export const FlowCanvas = ({ agentsStatus, agentSubtasks, enabledAgents, onSelec
   }, []);
 
   const handleNodeClick: NodeMouseHandler = (_event, node) => {
-    if (node.parentId && AGENT_IDS.includes(node.parentId as AgentId)) {
-      onSelectAgent(node.parentId as AgentId);
+    if (!visibleAgents.includes(node.id as AgentId)) {
       return;
     }
-
-    if (AGENT_IDS.includes(node.id as AgentId)) {
-      onSelectAgent(node.id as AgentId);
-    }
+    onSelectAgent(node.id as AgentId);
   };
 
   return (
-    <div className="flow-canvas" ref={flowContainerRef}>
+    <div className="topic-flow-shell flow-canvas" ref={flowContainerRef}>
       <ReactFlow
-        style={{ width: "100%", height: "100%" }}
         nodes={nodes}
         edges={edges}
         fitView
         minZoom={0.35}
-        maxZoom={1.8}
+        maxZoom={1.45}
+        defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+        panOnDrag
+        panOnScroll
+        zoomOnScroll
+        zoomOnPinch
+        zoomOnDoubleClick
+        nodesDraggable={false}
+        nodesConnectable={false}
+        elementsSelectable
         onInit={(instance) => {
           flowInstanceRef.current = instance;
-          window.requestAnimationFrame(() => {
-            flowInstanceRef.current?.fitView({ padding: 0.2, duration: 0 });
-          });
         }}
         onNodeClick={handleNodeClick}
       >
-        <Background gap={16} size={1} color="var(--flow-grid)" bgColor="var(--flow-bg)" />
-        <Controls />
+        <Background gap={20} size={1} color="var(--flow-grid)" bgColor="var(--flow-bg)" />
+        <Controls showInteractive={false} />
       </ReactFlow>
     </div>
   );
 };
+

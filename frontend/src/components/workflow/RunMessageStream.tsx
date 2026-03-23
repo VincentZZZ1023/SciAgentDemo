@@ -1,6 +1,8 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchArtifactContent } from "../../api/client";
 import { ArtifactContentView } from "../artifact/ArtifactContentView";
+import { type ConversationSegment } from "../../lib/conversationThread";
+import { APP_COPY, formatAgentLabel as copyFormatAgentLabel, formatAgentTitle } from "../../lib/copy";
 import {
   parseApprovalRequiredPayload,
   parseApprovalResolvedPayload,
@@ -17,12 +19,14 @@ type StreamItem =
   | {
       id: string;
       ts: number;
+      sourceRunId: string | null;
       type: "user";
       text: string;
     }
   | {
       id: string;
       ts: number;
+      sourceRunId: string | null;
       type: "status";
       label: string;
       text: string;
@@ -31,6 +35,7 @@ type StreamItem =
   | {
       id: string;
       ts: number;
+      sourceRunId: string | null;
       type: "assistant";
       fallbackText: string;
       agentId: AgentId;
@@ -41,6 +46,7 @@ type StreamItem =
   | {
       id: string;
       ts: number;
+      sourceRunId: string | null;
       type: "error";
       text: string;
       agentId: AgentId;
@@ -50,6 +56,7 @@ type StreamItem =
   | {
       id: string;
       ts: number;
+      sourceRunId: string | null;
       type: "approval";
       text: string;
       agentId: AgentId;
@@ -58,6 +65,7 @@ type StreamItem =
     };
 
 interface RunMessageStreamProps {
+  segments?: ConversationSegment[];
   taskPrompt: string;
   events: Event[];
   awaitingModule: AgentId | null;
@@ -66,6 +74,7 @@ interface RunMessageStreamProps {
   approving: boolean;
   runError: string;
   runStatus: string;
+  embedded?: boolean;
   onApprovalNoteChange: (value: string) => void;
   onApprove: (approved: boolean) => void;
   onOpenArtifact: (artifact: Artifact) => void;
@@ -74,6 +83,10 @@ interface RunMessageStreamProps {
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "paused"]);
 const SUCCESS_RUN_STATUSES = new Set(["succeeded", "completed", "done", "success"]);
 const FAILED_RUN_STATUSES = new Set(["failed", "canceled"]);
+const ARTIFACT_PREVIEW_CONCURRENCY = 2;
+
+const artifactPreviewCache = new Map<string, ArtifactPreviewState>();
+const artifactPreviewRequests = new Map<string, Promise<ArtifactPreviewState>>();
 
 type ChatLifecycleTone = "neutral" | "info" | "success" | "danger";
 
@@ -82,6 +95,27 @@ interface ChatLifecycleState {
   label: string;
   hint: string;
   tone: ChatLifecycleTone;
+}
+
+interface RenderTarget {
+  itemId: string;
+  content: string;
+  sourceKey: string;
+  mode: "none" | "text" | "markdown";
+  shouldStream: boolean;
+}
+
+interface RenderState {
+  sourceKey: string;
+  contentLength: number;
+  renderedLength: number;
+  isComplete: boolean;
+}
+
+interface ArtifactPreviewState {
+  state: "loading" | "loaded" | "error";
+  content: string;
+  contentType: string;
 }
 
 interface ActorMeta {
@@ -93,18 +127,13 @@ interface ActorMeta {
 
 const formatEventTime = (ts: number): string => new Date(ts).toLocaleString();
 
-const formatAgentLabel = (agentId: AgentId): string => {
-  if (agentId === "ideation") {
-    return "idea";
-  }
-  return agentId;
-};
+const formatAgentLabel = (agentId: AgentId): string => copyFormatAgentLabel(agentId);
 
 const getAgentMeta = (agentId: AgentId): ActorMeta => {
   if (agentId === "review") {
     return {
-      name: "Review Agent",
-      tag: "review",
+      name: APP_COPY.stream.reviewName,
+      tag: formatAgentLabel("review"),
       avatar: "R",
       className: "review",
     };
@@ -112,19 +141,76 @@ const getAgentMeta = (agentId: AgentId): ActorMeta => {
 
   if (agentId === "ideation") {
     return {
-      name: "Idea Agent",
-      tag: "idea",
+      name: APP_COPY.stream.ideationName,
+      tag: formatAgentLabel("ideation"),
       avatar: "I",
       className: "ideation",
     };
   }
 
   return {
-    name: "Experiment Agent",
-    tag: "experiment",
+    name: APP_COPY.stream.experimentName,
+    tag: formatAgentLabel("experiment"),
     avatar: "E",
     className: "experiment",
   };
+};
+
+const getArtifactPreviewKey = (artifact: Artifact): string => artifact.artifactId || artifact.uri;
+
+const sameArtifactPreviewState = (
+  left: ArtifactPreviewState | undefined,
+  right: ArtifactPreviewState,
+): boolean => {
+  if (!left) {
+    return false;
+  }
+
+  return (
+    left.state === right.state &&
+    left.content === right.content &&
+    left.contentType === right.contentType
+  );
+};
+
+const getCachedArtifactPreview = (artifact: Artifact): ArtifactPreviewState | null => {
+  return artifactPreviewCache.get(getArtifactPreviewKey(artifact)) ?? null;
+};
+
+const loadArtifactPreview = async (artifact: Artifact): Promise<ArtifactPreviewState> => {
+  const key = getArtifactPreviewKey(artifact);
+  const cached = artifactPreviewCache.get(key);
+  if (cached) {
+    return cached;
+  }
+
+  const existingRequest = artifactPreviewRequests.get(key);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = fetchArtifactContent(artifact.uri)
+    .then((loaded) => {
+      const result: ArtifactPreviewState = {
+        state: "loaded",
+        content: loaded.content,
+        contentType: loaded.contentType,
+      };
+      artifactPreviewCache.set(key, result);
+      artifactPreviewRequests.delete(key);
+      return result;
+    })
+    .catch(() => {
+      artifactPreviewRequests.delete(key);
+      return {
+        state: "error",
+        content: "",
+        contentType: artifact.contentType,
+      } satisfies ArtifactPreviewState;
+    });
+
+  artifactPreviewRequests.set(key, request);
+  return request;
 };
 
 const getFallbackAgentMeta = (raw: string): ActorMeta => {
@@ -149,15 +235,15 @@ const getFallbackAgentMeta = (raw: string): ActorMeta => {
 };
 
 const UserMeta: ActorMeta = {
-  name: "You",
-  tag: "task",
+  name: APP_COPY.stream.userName,
+  tag: APP_COPY.stream.userTag,
   avatar: "Y",
   className: "user",
 };
 
 const SystemMeta: ActorMeta = {
-  name: "SciAgent",
-  tag: "system",
+  name: APP_COPY.stream.systemName,
+  tag: APP_COPY.stream.systemTag,
   avatar: "S",
   className: "system",
 };
@@ -172,6 +258,27 @@ const isMarkdownArtifact = (artifact: Artifact): boolean => {
     normalizedName.endsWith(".md") ||
     normalizedName.endsWith(".markdown")
   );
+};
+
+const stripMarkdownForTyping = (value: string): string => {
+  return value
+    .replace(/```[\w-]*\n?/g, "")
+    .replace(/```/g, "")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/^>\s?/gm, "")
+    .replace(/^[-*+]\s+/gm, "")
+    .replace(/^\d+\.\s+/gm, "")
+    .replace(/^\|?[\s:-]+\|[\s|:-]*$/gm, "")
+    .replace(/\|/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 };
 
 const pickPrimaryArtifact = (artifacts: Artifact[]): Artifact | null => {
@@ -227,18 +334,18 @@ const pushUniqueHint = (target: string[], value: string): void => {
 
 const buildAssistantFallbackText = (turn: AssistantTurnBuilder, primaryArtifact: Artifact | null): string => {
   if (primaryArtifact && isMarkdownArtifact(primaryArtifact)) {
-    return `${formatStatusLabel(formatAgentLabel(turn.agentId))} is drafting the markdown answer.`;
+    return APP_COPY.stream.draftingMarkdown(formatAgentLabel(turn.agentId));
   }
 
   if (primaryArtifact) {
-    return `Generated ${primaryArtifact.name}.`;
+    return APP_COPY.stream.generatedArtifact(primaryArtifact.name);
   }
 
   if (turn.hints.length > 0) {
     return turn.hints[turn.hints.length - 1];
   }
 
-  return `${formatStatusLabel(formatAgentLabel(turn.agentId))} prepared a response.`;
+  return APP_COPY.stream.preparedResponse(formatAgentLabel(turn.agentId));
 };
 
 const summarizeThinkingStep = (summary: string, agentId: AgentId): string | null => {
@@ -248,28 +355,28 @@ const summarizeThinkingStep = (summary: string, agentId: AgentId): string | null
   }
 
   if (normalized.includes("starting literature review")) {
-    return "Scanning and organizing the relevant literature.";
+    return APP_COPY.stream.scanLiterature;
   }
   if (normalized.includes("generating ideas from survey")) {
-    return "Turning the survey into candidate research directions.";
+    return APP_COPY.stream.surveyToIdeas;
   }
   if (normalized.includes("running experiments for idea")) {
-    return "Testing the selected idea against evaluation criteria.";
+    return APP_COPY.stream.testIdea;
   }
   if (normalized.includes("refining idea from results")) {
-    return "Feeding experiment results back into the idea draft.";
+    return APP_COPY.stream.refineIdea;
   }
   if (normalized.includes("invoking deepseek")) {
-    return "Querying the model for the next draft segment.";
+    return APP_COPY.stream.invokeModel;
   }
   if (normalized.includes("received deepseek response")) {
-    return "Condensing the model response into a readable answer.";
+    return APP_COPY.stream.condenseModel;
   }
   if (normalized.includes("temporary failure") || normalized.includes("retrying")) {
-    return "Recovering from a transient issue before continuing.";
+    return APP_COPY.stream.recoverTransientIssue;
   }
   if (normalized.includes("produced") && normalized.endsWith(".md")) {
-    return `Preparing the final ${formatStatusLabel(formatAgentLabel(agentId))} markdown output.`;
+    return APP_COPY.stream.prepareMarkdown(formatAgentTitle(agentId));
   }
 
   return null;
@@ -277,12 +384,12 @@ const summarizeThinkingStep = (summary: string, agentId: AgentId): string | null
 
 const getGeneratingCopy = (runStatus: string): string => {
   if (runStatus === "queued") {
-    return "Preparing the run and assembling the first update.";
+    return APP_COPY.stream.queueThinking;
   }
   if (runStatus === "paused") {
-    return "Waiting at the current checkpoint before continuing.";
+    return APP_COPY.stream.pausedThinking;
   }
-  return "Writing the next assistant update from the live run events.";
+  return APP_COPY.stream.activeThinking;
 };
 
 const MessageHeader = ({
@@ -343,8 +450,8 @@ const deriveChatLifecycleState = ({
   if (runError.trim() || FAILED_RUN_STATUSES.has(normalizedStatus)) {
     return {
       key: "failed",
-      label: "Failed",
-      hint: runError.trim() || "The run stopped before completion. Review the latest assistant message for the next action.",
+      label: formatStatusLabel("failed"),
+      hint: runError.trim() || APP_COPY.stream.noPromptFailure,
       tone: "danger",
     };
   }
@@ -352,10 +459,10 @@ const deriveChatLifecycleState = ({
   if (SUCCESS_RUN_STATUSES.has(normalizedStatus)) {
     return {
       key: "completed",
-      label: "Completed",
+      label: APP_COPY.stream.runCompleted,
       hint: hasArtifacts
-        ? "The run finished and the latest deliverables are available in this conversation."
-        : "The run finished successfully.",
+        ? APP_COPY.stream.runCompletedWithArtifacts
+        : APP_COPY.stream.runCompletedWithoutArtifacts,
       tone: "success",
     };
   }
@@ -363,8 +470,8 @@ const deriveChatLifecycleState = ({
   if (isAssistantTyping || showGeneratingBubble) {
     return {
       key: "generating",
-      label: "Generating response...",
-      hint: "The assistant is turning live run signals into the next user-facing update.",
+      label: APP_COPY.stream.generatingLabel,
+      hint: APP_COPY.stream.generatingHint,
       tone: "info",
     };
   }
@@ -372,8 +479,8 @@ const deriveChatLifecycleState = ({
   if (normalizedStatus === "queued" || (ACTIVE_RUN_STATUSES.has(normalizedStatus) && !hasModuleStarted)) {
     return {
       key: "starting",
-      label: "Starting run...",
-      hint: "Preparing the selected agents and loading the first step.",
+      label: APP_COPY.stream.startingLabel,
+      hint: APP_COPY.stream.startingHint,
       tone: "neutral",
     };
   }
@@ -381,8 +488,8 @@ const deriveChatLifecycleState = ({
   if (normalizedStatus === "running" && hasModuleStarted && !hasModuleFinished && !hasArtifacts) {
     return {
       key: "planning",
-      label: "Planning...",
-      hint: "The selected agents are shaping the first concrete answer from your task.",
+      label: APP_COPY.stream.planningLabel,
+      hint: APP_COPY.stream.planningHint,
       tone: "neutral",
     };
   }
@@ -390,11 +497,11 @@ const deriveChatLifecycleState = ({
   if (ACTIVE_RUN_STATUSES.has(normalizedStatus) || approvalSummary || awaitingModule) {
     return {
       key: "running",
-      label: "Running...",
+      label: APP_COPY.stream.runningLabel,
       hint:
         approvalSummary || awaitingModule
-          ? "The run is waiting for the next user decision before continuing."
-          : "The workflow is still active and will add new assistant messages as progress arrives.",
+          ? APP_COPY.stream.runningAwaitingHint
+          : APP_COPY.stream.runningHint,
       tone: "neutral",
     };
   }
@@ -404,74 +511,18 @@ const deriveChatLifecycleState = ({
 
 const TypewriterText = ({
   text,
-  active,
-  animateText = true,
+  visibleChars,
   showIndicator,
-  onStep,
-  onTypingChange,
 }: {
   text: string;
-  active: boolean;
-  animateText?: boolean;
+  visibleChars: number;
   showIndicator?: boolean;
-  onStep?: () => void;
-  onTypingChange?: (active: boolean) => void;
 }) => {
-  const shouldAnimateText = active && animateText;
-  const shouldShowIndicator = showIndicator ?? active;
-  const [visibleChars, setVisibleChars] = useState(shouldAnimateText ? 0 : text.length);
-
-  useEffect(() => {
-    if (!shouldAnimateText) {
-      setVisibleChars(text.length);
-      onTypingChange?.(shouldShowIndicator);
-      return;
-    }
-
-    setVisibleChars(0);
-    onTypingChange?.(true);
-
-    if (!text.length) {
-      onStep?.();
-      onTypingChange?.(false);
-      return;
-    }
-
-    const step = Math.max(1, Math.ceil(text.length / 36));
-    const timer = window.setInterval(() => {
-      setVisibleChars((current) => {
-        if (current >= text.length) {
-          window.clearInterval(timer);
-          return text.length;
-        }
-
-        const nextValue = Math.min(text.length, current + step);
-        window.requestAnimationFrame(() => {
-          onStep?.();
-        });
-        if (nextValue >= text.length) {
-          window.clearInterval(timer);
-          window.requestAnimationFrame(() => {
-            onTypingChange?.(false);
-          });
-        }
-        return nextValue;
-      });
-    }, 20);
-
-    return () => {
-      window.clearInterval(timer);
-      onTypingChange?.(false);
-    };
-  }, [onStep, onTypingChange, shouldAnimateText, shouldShowIndicator, text]);
-
-  const isTyping = shouldAnimateText ? visibleChars < text.length : shouldShowIndicator;
-
   return (
     <span className="workflow-stream-typewriter">
-      {shouldAnimateText ? text.slice(0, visibleChars) : text}
-      {isTyping ? (
-        <span className="workflow-stream-typing" aria-label="Assistant is generating">
+      {text.slice(0, visibleChars)}
+      {showIndicator ? (
+        <span className="workflow-stream-typing" aria-label={APP_COPY.stream.typingAria}>
           <span />
           <span />
           <span />
@@ -485,78 +536,18 @@ const StreamingMarkdownPreview = ({
   content,
   contentType,
   artifactName,
-  active,
-  onStep,
-  onTypingChange,
 }: {
   content: string;
   contentType: string;
   artifactName?: string;
-  active: boolean;
-  onStep?: () => void;
-  onTypingChange?: (active: boolean) => void;
 }) => {
-  const [visibleChars, setVisibleChars] = useState(active ? 0 : content.length);
-
-  useEffect(() => {
-    if (!active) {
-      setVisibleChars(content.length);
-      onTypingChange?.(false);
-      return;
-    }
-
-    setVisibleChars(0);
-    onTypingChange?.(true);
-
-    if (!content.length) {
-      onTypingChange?.(false);
-      return;
-    }
-
-    const step = Math.max(1, Math.ceil(content.length / 220));
-    const timer = window.setInterval(() => {
-      setVisibleChars((current) => {
-        if (current >= content.length) {
-          window.clearInterval(timer);
-          return content.length;
-        }
-
-        const nextValue = Math.min(content.length, current + step);
-        window.requestAnimationFrame(() => {
-          onStep?.();
-        });
-        if (nextValue >= content.length) {
-          window.clearInterval(timer);
-          window.requestAnimationFrame(() => {
-            onTypingChange?.(false);
-          });
-        }
-        return nextValue;
-      });
-    }, 18);
-
-    return () => {
-      window.clearInterval(timer);
-      onTypingChange?.(false);
-    };
-  }, [active, content, onStep, onTypingChange]);
-
-  const isTyping = active && visibleChars < content.length;
-
   return (
     <div className="workflow-stream-markdown-shell">
       <ArtifactContentView
         contentType={contentType}
-        content={active ? content.slice(0, visibleChars) : content}
+        content={content}
         artifactName={artifactName}
       />
-      {isTyping ? (
-        <div className="workflow-stream-markdown-indicator" aria-label="Assistant is generating markdown">
-          <span />
-          <span />
-          <span />
-        </div>
-      ) : null}
     </div>
   );
 };
@@ -566,6 +557,8 @@ const mapEventsToStreamItems = (
   events: Event[],
   awaitingModule: AgentId | null,
   approvalSummary: string | null,
+  sourceRunId: string | null,
+  promptTs?: number,
 ): StreamItem[] => {
   const items: StreamItem[] = [];
   const orderedEvents = [...events].sort((left, right) => left.ts - right.ts);
@@ -584,6 +577,7 @@ const mapEventsToStreamItems = (
       items.push({
         id: currentTurn.id,
         ts: currentTurn.ts,
+        sourceRunId,
         type: "assistant",
         fallbackText,
         agentId: currentTurn.agentId,
@@ -600,7 +594,7 @@ const mapEventsToStreamItems = (
     if (!currentTurn || currentTurn.agentId !== event.agentId) {
       flushCurrentTurn();
       currentTurn = {
-        id: `turn-${event.eventId}`,
+        id: `turn-${sourceRunId ?? "thread"}-${event.eventId}`,
         ts: event.ts,
         agentId: event.agentId,
         artifactMap: new Map<string, Artifact>(),
@@ -616,6 +610,7 @@ const mapEventsToStreamItems = (
     items.push({
       id,
       ts,
+      sourceRunId,
       type: "status",
       label,
       text,
@@ -625,8 +620,9 @@ const mapEventsToStreamItems = (
 
   if (taskPrompt.trim()) {
     items.push({
-      id: "user-task",
-      ts: orderedEvents[0]?.ts ? Math.max(0, orderedEvents[0].ts - 1) : Date.now(),
+      id: `user-task-${sourceRunId ?? "thread"}`,
+      ts: orderedEvents[0]?.ts ? Math.max(0, orderedEvents[0].ts - 1) : promptTs ?? Date.now(),
+      sourceRunId,
       type: "user",
       text: taskPrompt.trim(),
     });
@@ -636,12 +632,12 @@ const mapEventsToStreamItems = (
     if (event.kind === "module_started") {
       const payload = parseModuleStartedPayload(event);
       const turn = ensureTurn(event);
-      pushUniqueHint(turn.thinkingSteps, summarizeThinkingStep(event.summary, event.agentId) ?? "Setting up the agent workspace.");
+      pushUniqueHint(turn.thinkingSteps, summarizeThinkingStep(event.summary, event.agentId) ?? APP_COPY.stream.settingUpWorkspace);
       pushStatus(
         `status-${event.eventId}`,
         event.ts,
-        `${formatStatusLabel(formatAgentLabel(event.agentId))} started`,
-        payload?.model ? `Using ${payload.model}.` : "The agent has started working.",
+        APP_COPY.stream.moduleStartedLabel(formatAgentTitle(event.agentId)),
+        APP_COPY.stream.moduleStartedText(payload?.model),
       );
       return;
     }
@@ -652,7 +648,7 @@ const mapEventsToStreamItems = (
         turn.artifactMap.set(artifact.artifactId, artifact);
       });
       pushUniqueHint(turn.hints, event.summary);
-      pushUniqueHint(turn.thinkingSteps, summarizeThinkingStep(event.summary, event.agentId) ?? "Packaging the final answer and attachments.");
+      pushUniqueHint(turn.thinkingSteps, summarizeThinkingStep(event.summary, event.agentId) ?? APP_COPY.stream.packagingReply);
       return;
     }
 
@@ -662,6 +658,7 @@ const mapEventsToStreamItems = (
       items.push({
         id: event.eventId,
         ts: event.ts,
+        sourceRunId,
         type: "approval",
         text: approvalSummary ?? payload?.summary ?? event.summary,
         agentId: event.agentId,
@@ -678,8 +675,9 @@ const mapEventsToStreamItems = (
         items.push({
           id: event.eventId,
           ts: event.ts,
+          sourceRunId,
           type: "error",
-          text: `${formatStatusLabel(formatAgentLabel(event.agentId))} finished with failure.`,
+          text: APP_COPY.stream.moduleFailedText(formatAgentTitle(event.agentId)),
           agentId: event.agentId,
           kind: event.kind,
           severity: "error",
@@ -692,8 +690,8 @@ const mapEventsToStreamItems = (
         pushStatus(
           `status-${event.eventId}`,
           event.ts,
-          `${formatStatusLabel(formatAgentLabel(event.agentId))} skipped`,
-          "This agent was not run for the current request.",
+          APP_COPY.stream.moduleSkippedLabel(formatAgentTitle(event.agentId)),
+          APP_COPY.stream.moduleSkippedText,
         );
         return;
       }
@@ -705,10 +703,10 @@ const mapEventsToStreamItems = (
       pushStatus(
         `status-${event.eventId}`,
         event.ts,
-        `${formatStatusLabel(formatAgentLabel(event.agentId))} completed`,
+        APP_COPY.stream.moduleCompletedLabel(formatAgentTitle(event.agentId)),
         payload?.artifactNames && payload.artifactNames.length > 0
-          ? `Deliverables ready: ${payload.artifactNames.join(", ")}.`
-          : "The agent finished its response.",
+          ? APP_COPY.stream.moduleCompletedWithArtifacts(payload.artifactNames)
+          : APP_COPY.stream.moduleCompletedText,
         "success",
       );
       return;
@@ -719,8 +717,10 @@ const mapEventsToStreamItems = (
       pushStatus(
         `status-${event.eventId}`,
         event.ts,
-        payload?.approved ? "Approval granted" : "Approval rejected",
-        `${formatStatusLabel(formatAgentLabel(event.agentId))} ${payload?.approved ? "can continue." : "was stopped by user decision."}`,
+        payload?.approved ? APP_COPY.stream.approvalGranted : APP_COPY.stream.approvalRejected,
+        payload?.approved
+          ? APP_COPY.stream.approvalContinue(formatAgentTitle(event.agentId))
+          : APP_COPY.stream.approvalStopped(formatAgentTitle(event.agentId)),
         payload?.approved ? "success" : "danger",
       );
       return;
@@ -732,8 +732,8 @@ const mapEventsToStreamItems = (
       pushStatus(
         `status-${event.eventId}`,
         event.ts,
-        `${formatStatusLabel(formatAgentLabel(event.agentId))} skipped`,
-        payload?.reason ? `Reason: ${payload.reason}.` : "This agent did not run.",
+        APP_COPY.stream.moduleSkippedLabel(formatAgentTitle(event.agentId)),
+        payload?.reason ? APP_COPY.stream.skipReason(payload.reason) : APP_COPY.stream.moduleDidNotRun,
       );
       return;
     }
@@ -744,6 +744,7 @@ const mapEventsToStreamItems = (
       items.push({
         id: event.eventId,
         ts: event.ts,
+        sourceRunId,
         type: "error",
         text: payload?.error.message ?? event.summary,
         agentId: event.agentId,
@@ -769,7 +770,7 @@ const mapEventsToStreamItems = (
           `status-${event.eventId}`,
           event.ts,
           formatStatusLabel(event.summary),
-          "Run lifecycle update.",
+          APP_COPY.stream.lifecycleUpdate,
           "info",
         );
       }
@@ -781,7 +782,28 @@ const mapEventsToStreamItems = (
   return items;
 };
 
+const mapSegmentsToStreamItems = (segments: ConversationSegment[]): StreamItem[] => {
+  const items = segments.flatMap((segment) =>
+    mapEventsToStreamItems(
+      segment.prompt,
+      segment.events,
+      segment.awaitingModule,
+      segment.approvalSummary,
+      segment.sourceRunId,
+      segment.promptTs,
+    ),
+  );
+
+  return items.sort((left, right) => {
+    if (left.ts !== right.ts) {
+      return left.ts - right.ts;
+    }
+    return left.id.localeCompare(right.id);
+  });
+};
+
 export const RunMessageStream = ({
+  segments,
   taskPrompt,
   events,
   awaitingModule,
@@ -790,24 +812,15 @@ export const RunMessageStream = ({
   approving,
   runError,
   runStatus,
+  embedded = false,
   onApprovalNoteChange,
   onApprove,
   onOpenArtifact,
 }: RunMessageStreamProps) => {
   const listRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
-  const requestedArtifactIdsRef = useRef<Set<string>>(new Set());
-  const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
-  const [artifactBodies, setArtifactBodies] = useState<
-    Record<
-      string,
-      {
-        state: "loading" | "loaded" | "error";
-        content: string;
-        contentType: string;
-      }
-    >
-  >({});
+  const [artifactBodies, setArtifactBodies] = useState<Record<string, ArtifactPreviewState>>({});
+  const [renderStates, setRenderStates] = useState<Record<string, RenderState>>({});
   const scrollToBottom = useCallback((force = false) => {
     if (!listRef.current) {
       return;
@@ -829,118 +842,422 @@ export const RunMessageStream = ({
     stickToBottomRef.current = scrollTop + clientHeight >= scrollHeight - 32;
   }, []);
 
-  const items = useMemo(
-    () => mapEventsToStreamItems(taskPrompt, events, awaitingModule, approvalSummary),
-    [approvalSummary, awaitingModule, events, taskPrompt],
+  const threadSegments = useMemo<ConversationSegment[]>(
+    () =>
+      segments && segments.length > 0
+        ? segments
+        : [
+            {
+              threadId: events[0]?.topicId ?? events[0]?.runId ?? "run-thread",
+              sourceRunId: events[0]?.runId ?? null,
+              prompt: taskPrompt,
+              promptTs: events[0]?.ts ? Math.max(0, events[0].ts - 1) : Date.now(),
+              events,
+              runStatus,
+              awaitingModule,
+              approvalSummary,
+            },
+          ],
+    [approvalSummary, awaitingModule, events, runStatus, segments, taskPrompt],
   );
 
-  const latestAnimatedId = useMemo(() => {
-    for (let index = items.length - 1; index >= 0; index -= 1) {
-      if (items[index].type === "assistant" || items[index].type === "error") {
-        return items[index].id;
-      }
-    }
-    return null;
-  }, [items]);
+  const activeSegment = useMemo(
+    () =>
+      [...threadSegments].reverse().find((segment) =>
+        ACTIVE_RUN_STATUSES.has(segment.runStatus.trim().toLowerCase()) ||
+        Boolean(segment.awaitingModule) ||
+        Boolean(segment.approvalSummary),
+      ) ??
+      threadSegments[threadSegments.length - 1] ??
+      null,
+    [threadSegments],
+  );
+
+  const items = useMemo(() => mapSegmentsToStreamItems(threadSegments), [threadSegments]);
+
+  const activeRunId = activeSegment?.sourceRunId ?? null;
+  const activeStatus = activeSegment?.runStatus.trim().toLowerCase() ?? "";
+  const isActiveRunStreaming = ACTIVE_RUN_STATUSES.has(activeStatus);
 
   const hasAssistantResponse = useMemo(
-    () => items.some((item) => item.type !== "user"),
-    [items],
+    () =>
+      activeRunId
+        ? items.some((item) => item.sourceRunId === activeRunId && item.type !== "user" && item.type !== "status")
+        : items.some((item) => item.type !== "user" && item.type !== "status"),
+    [activeRunId, items],
   );
 
   const showGeneratingBubble =
-    Boolean(taskPrompt.trim()) &&
-    ACTIVE_RUN_STATUSES.has(runStatus) &&
-    !approvalSummary &&
-    !awaitingModule &&
+    Boolean(activeSegment?.prompt.trim()) &&
+    isActiveRunStreaming &&
+    !activeSegment?.approvalSummary &&
+    !activeSegment?.awaitingModule &&
     !hasAssistantResponse;
 
-  const chatLifecycleState = useMemo(
-    () =>
-      deriveChatLifecycleState({
-        taskPrompt,
-        events,
-        runStatus,
-        awaitingModule,
-        approvalSummary,
-        runError,
-        isAssistantTyping: Boolean(typingMessageId),
-        showGeneratingBubble,
-      }),
-    [approvalSummary, awaitingModule, events, runError, runStatus, showGeneratingBubble, taskPrompt, typingMessageId],
-  );
-
-  const leadingUserCount = useMemo(() => {
-    const firstNonUserIndex = items.findIndex((item) => item.type !== "user");
-    return firstNonUserIndex < 0 ? items.length : firstNonUserIndex;
-  }, [items]);
-
   const assistantPrimaryArtifacts = useMemo(
-    () =>
-      items
-        .filter((item): item is Extract<StreamItem, { type: "assistant" }> => item.type === "assistant")
-        .map((item) => item.primaryArtifact)
-        .filter((artifact): artifact is Artifact => artifact !== null),
+    () => {
+      const ordered: Artifact[] = [];
+      const seen = new Set<string>();
+
+      for (let index = items.length - 1; index >= 0; index -= 1) {
+        const item = items[index];
+        const artifact = item.type === "assistant" ? item.primaryArtifact : null;
+        if (!artifact) {
+          continue;
+        }
+
+        const key = getArtifactPreviewKey(artifact);
+        if (seen.has(key)) {
+          continue;
+        }
+
+        seen.add(key);
+        ordered.push(artifact);
+      }
+
+      return ordered;
+    },
     [items],
   );
 
   useEffect(() => {
     let cancelled = false;
 
-    assistantPrimaryArtifacts.forEach((artifact) => {
-      if (requestedArtifactIdsRef.current.has(artifact.artifactId)) {
-        return;
-      }
-      requestedArtifactIdsRef.current.add(artifact.artifactId);
+    setArtifactBodies((current) => {
+      let changed = false;
+      const next = { ...current };
 
-      setArtifactBodies((current) => ({
-        ...current,
-        [artifact.artifactId]: {
-          state: "loading",
-          content: "",
-          contentType: artifact.contentType,
-        },
-      }));
+      assistantPrimaryArtifacts.forEach((artifact) => {
+        const key = getArtifactPreviewKey(artifact);
+        const cached = getCachedArtifactPreview(artifact);
+        if (cached && !sameArtifactPreviewState(current[key], cached)) {
+          next[key] = cached;
+          changed = true;
+        }
+      });
 
-      void fetchArtifactContent(artifact.uri)
-        .then((loaded) => {
-          if (cancelled) {
-            return;
+      return changed ? next : current;
+    });
+
+    const queue = assistantPrimaryArtifacts.filter((artifact) => !getCachedArtifactPreview(artifact));
+    let cursor = 0;
+    let inFlight = 0;
+
+    const pump = () => {
+      while (!cancelled && inFlight < ARTIFACT_PREVIEW_CONCURRENCY && cursor < queue.length) {
+        const artifact = queue[cursor];
+        cursor += 1;
+        inFlight += 1;
+
+        const key = getArtifactPreviewKey(artifact);
+        setArtifactBodies((current) => {
+          const existing = current[key];
+          if (existing?.state === "loaded" || existing?.state === "loading") {
+            return current;
           }
 
-          setArtifactBodies((current) => ({
+          return {
             ...current,
-            [artifact.artifactId]: {
-              state: "loaded",
-              content: loaded.content,
-              contentType: loaded.contentType,
-            },
-          }));
-        })
-        .catch(() => {
-          if (cancelled) {
-            return;
-          }
-
-          setArtifactBodies((current) => ({
-            ...current,
-            [artifact.artifactId]: {
-              state: "error",
+            [key]: {
+              state: "loading",
               content: "",
               contentType: artifact.contentType,
             },
-          }));
+          };
         });
-    });
+
+        void loadArtifactPreview(artifact)
+          .then((result) => {
+            if (cancelled) {
+              return;
+            }
+
+            setArtifactBodies((current) => {
+              if (sameArtifactPreviewState(current[key], result)) {
+                return current;
+              }
+
+              return {
+                ...current,
+                [key]: result,
+              };
+            });
+          })
+          .finally(() => {
+            inFlight -= 1;
+            if (!cancelled) {
+              pump();
+            }
+          });
+      }
+    };
+
+    pump();
 
     return () => {
       cancelled = true;
     };
   }, [assistantPrimaryArtifacts]);
 
+  const renderTargets = useMemo<RenderTarget[]>(() => {
+    return items.map((item) => {
+      if (item.type !== "assistant" && item.type !== "error") {
+        return {
+          itemId: item.id,
+          content: "",
+          sourceKey: `none:${item.id}`,
+          mode: "none",
+          shouldStream: false,
+        };
+      }
+
+      const artifactState =
+        item.type === "assistant" && item.primaryArtifact
+          ? artifactBodies[getArtifactPreviewKey(item.primaryArtifact)] ?? getCachedArtifactPreview(item.primaryArtifact)
+          : null;
+      const markdownReady =
+        item.type === "assistant" &&
+        item.primaryArtifact &&
+        artifactState?.state === "loaded" &&
+        isMarkdownArtifact(item.primaryArtifact);
+      const isActiveStreamItem =
+        item.sourceRunId === activeRunId &&
+        isActiveRunStreaming &&
+        (item.type === "assistant" || item.type === "error");
+      const shouldRenderMarkdown = markdownReady && !isActiveStreamItem;
+      const markdownTypingText =
+        item.type === "assistant" && markdownReady && artifactState
+          ? stripMarkdownForTyping(artifactState.content)
+          : "";
+      const mode: RenderTarget["mode"] = shouldRenderMarkdown ? "markdown" : "text";
+      const content =
+        item.type === "assistant" && markdownReady && artifactState
+          ? shouldRenderMarkdown
+            ? artifactState.content
+            : markdownTypingText || item.fallbackText
+          : item.type === "assistant"
+            ? item.fallbackText
+            : item.text;
+      const sourceKey =
+        shouldRenderMarkdown && item.type === "assistant" && item.primaryArtifact
+          ? `markdown:${item.primaryArtifact.artifactId}:${content.length}`
+          : `text:${item.id}:${markdownReady && artifactState ? `artifact:${artifactState.content.length}` : "fallback"}:${content.length}`;
+      const shouldStream = Boolean(
+        isActiveStreamItem &&
+          (item.type === "error" || item.type === "assistant" && (!item.primaryArtifact || markdownReady)),
+      );
+
+      return {
+        itemId: item.id,
+        content,
+        sourceKey,
+        mode,
+        shouldStream,
+      };
+    });
+  }, [activeRunId, artifactBodies, isActiveRunStreaming, items]);
+
+  const renderTargetById = useMemo(() => new Map(renderTargets.map((target) => [target.itemId, target])), [renderTargets]);
+
+  useEffect(() => {
+    setRenderStates((current) => {
+      let changed = Object.keys(current).length !== renderTargets.length;
+      const next: Record<string, RenderState> = {};
+
+      renderTargets.forEach((target) => {
+        const previous = current[target.itemId];
+        let nextState: RenderState;
+
+        if (!previous) {
+          nextState = target.shouldStream
+            ? {
+                sourceKey: target.sourceKey,
+                contentLength: target.content.length,
+                renderedLength: 0,
+                isComplete: target.content.length === 0,
+              }
+            : {
+                sourceKey: target.sourceKey,
+                contentLength: target.content.length,
+                renderedLength: target.content.length,
+                isComplete: true,
+              };
+          changed = true;
+        } else if (!target.shouldStream) {
+          if (
+            previous.sourceKey === target.sourceKey &&
+            previous.contentLength === target.content.length &&
+            previous.renderedLength === target.content.length &&
+            previous.isComplete
+          ) {
+            nextState = previous;
+          } else {
+            nextState = {
+              sourceKey: target.sourceKey,
+              contentLength: target.content.length,
+              renderedLength: target.content.length,
+              isComplete: true,
+            };
+            changed = true;
+          }
+        } else if (previous.sourceKey !== target.sourceKey) {
+          nextState = {
+            sourceKey: target.sourceKey,
+            contentLength: target.content.length,
+            renderedLength: 0,
+            isComplete: target.content.length === 0,
+          };
+          changed = true;
+        } else {
+          let renderedLength = Math.min(previous.renderedLength, target.content.length);
+          if (previous.isComplete && previous.contentLength < target.content.length) {
+            renderedLength = previous.contentLength;
+          }
+
+          const isComplete = previous.isComplete && renderedLength >= target.content.length;
+          if (
+            previous.contentLength === target.content.length &&
+            previous.renderedLength === renderedLength &&
+            previous.isComplete === isComplete
+          ) {
+            nextState = previous;
+          } else {
+            nextState = {
+              sourceKey: target.sourceKey,
+              contentLength: target.content.length,
+              renderedLength,
+              isComplete,
+            };
+            changed = true;
+          }
+        }
+
+        next[target.itemId] = nextState;
+      });
+
+      return changed ? next : current;
+    });
+  }, [renderTargets]);
+
+  const activeRenderTarget = useMemo(() => {
+    for (let index = renderTargets.length - 1; index >= 0; index -= 1) {
+      const target = renderTargets[index];
+      const state = renderStates[target.itemId];
+      if (target.shouldStream && state && !state.isComplete) {
+        return target;
+      }
+    }
+
+    return null;
+  }, [renderStates, renderTargets]);
+
+  const latestLoadingMessageId = useMemo(() => {
+    if (!activeRunId || !isActiveRunStreaming) {
+      return null;
+    }
+
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
+      if (item.type !== "assistant" || !item.primaryArtifact || item.sourceRunId !== activeRunId) {
+        continue;
+      }
+
+      const artifactState =
+        artifactBodies[getArtifactPreviewKey(item.primaryArtifact)] ?? getCachedArtifactPreview(item.primaryArtifact);
+      if (!artifactState || artifactState.state === "loading") {
+        return item.id;
+      }
+    }
+
+    return null;
+  }, [activeRunId, artifactBodies, isActiveRunStreaming, items]);
+
+  useEffect(() => {
+    if (!activeRenderTarget) {
+      return undefined;
+    }
+
+    const delay = 10;
+    const step = 1;
+
+    const timer = window.setInterval(() => {
+      setRenderStates((current) => {
+        const previous = current[activeRenderTarget.itemId];
+        if (!previous) {
+          return current;
+        }
+
+        const nextRenderedLength = Math.min(activeRenderTarget.content.length, previous.renderedLength + step);
+        const nextIsComplete = nextRenderedLength >= activeRenderTarget.content.length;
+        if (nextRenderedLength === previous.renderedLength && nextIsComplete === previous.isComplete) {
+          return current;
+        }
+
+        return {
+          ...current,
+          [activeRenderTarget.itemId]: {
+            sourceKey: activeRenderTarget.sourceKey,
+            contentLength: activeRenderTarget.content.length,
+            renderedLength: nextRenderedLength,
+            isComplete: nextIsComplete,
+          },
+        };
+      });
+
+      window.requestAnimationFrame(() => {
+        scrollToBottom();
+      });
+    }, delay);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activeRenderTarget, scrollToBottom]);
+
+  const typingMessageId = activeRenderTarget?.itemId ?? latestLoadingMessageId ?? null;
+
+  const chatLifecycleState = useMemo(
+    () =>
+      deriveChatLifecycleState({
+        taskPrompt: activeSegment?.prompt ?? taskPrompt,
+        events: activeSegment?.events ?? events,
+        runStatus: activeSegment?.runStatus ?? runStatus,
+        awaitingModule: activeSegment?.awaitingModule ?? awaitingModule,
+        approvalSummary: activeSegment?.approvalSummary ?? approvalSummary,
+        runError,
+        isAssistantTyping: Boolean(typingMessageId),
+        showGeneratingBubble,
+      }),
+    [
+      activeSegment,
+      approvalSummary,
+      awaitingModule,
+      events,
+      runError,
+      runStatus,
+      showGeneratingBubble,
+      taskPrompt,
+      typingMessageId,
+    ],
+  );
+
+  const statusAnchorMessageId = useMemo(() => {
+    if (!activeRunId) {
+      return null;
+    }
+
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (items[index].type === "user" && items[index].sourceRunId === activeRunId) {
+        return items[index].id;
+      }
+    }
+
+    return null;
+  }, [activeRunId, items]);
+
   useEffect(() => {
     scrollToBottom();
-  }, [chatLifecycleState?.key, items.length, latestAnimatedId, scrollToBottom, showGeneratingBubble]);
+  }, [chatLifecycleState?.key, items.length, scrollToBottom, showGeneratingBubble, typingMessageId]);
 
   useEffect(() => {
     const listElement = listRef.current;
@@ -960,7 +1277,7 @@ export const RunMessageStream = ({
   }, [updateStickToBottom]);
 
   return (
-    <div className="workflow-stream-list" ref={listRef}>
+    <div className={embedded ? "workflow-stream-list workflow-stream-list-embedded" : "workflow-stream-list"} ref={listRef}>
       {items.length === 0 && !showGeneratingBubble ? (
         <div className="workflow-stream-empty">
           <div className="workflow-stream-empty-card">
@@ -969,25 +1286,22 @@ export const RunMessageStream = ({
                 {SystemMeta.avatar}
               </span>
               <div className="workflow-stream-empty-copy">
-                <strong className="workflow-stream-empty-title">SciAgent will answer here.</strong>
-                <p className="workflow-stream-empty-hint">
-                  Start a run and this conversation will turn live agent output into readable replies, with artifacts
-                  attached under each response.
-                </p>
+                <strong className="workflow-stream-empty-title">{APP_COPY.stream.emptyTitle}</strong>
+                <p className="workflow-stream-empty-hint">{APP_COPY.stream.emptyHint}</p>
               </div>
             </div>
           </div>
         </div>
       ) : null}
 
-      {leadingUserCount === 0 && chatLifecycleState ? (
+      {!statusAnchorMessageId && chatLifecycleState ? (
         <div className={`workflow-stream-status workflow-stream-status-${chatLifecycleState.tone}`}>
           <span className="workflow-stream-status-pill">{chatLifecycleState.label}</span>
           <p className="workflow-stream-status-text">{chatLifecycleState.hint}</p>
         </div>
       ) : null}
 
-      {items.map((item, index) => {
+      {items.map((item) => {
         if (item.type === "user") {
           return (
             <div key={item.id} className="workflow-stream-block">
@@ -997,7 +1311,7 @@ export const RunMessageStream = ({
                   <p className="workflow-stream-text">{item.text}</p>
                 </div>
               </article>
-              {index === leadingUserCount - 1 && chatLifecycleState ? (
+              {item.id === statusAnchorMessageId && chatLifecycleState ? (
                 <div className={`workflow-stream-status workflow-stream-status-${chatLifecycleState.tone}`}>
                   <span className="workflow-stream-status-pill">{chatLifecycleState.label}</span>
                   <p className="workflow-stream-status-text">{chatLifecycleState.hint}</p>
@@ -1023,7 +1337,7 @@ export const RunMessageStream = ({
               <MessageHeader
                 actor={actor}
                 ts={item.ts}
-                extraBadge={<span className="event-badge">approval</span>}
+                extraBadge={<span className="event-badge">{APP_COPY.stream.approvalBadge}</span>}
               />
               <div className="workflow-stream-card workflow-stream-card-approval">
                 <p className="workflow-stream-text">{item.text}</p>
@@ -1032,13 +1346,13 @@ export const RunMessageStream = ({
                     <textarea
                       value={approvalNote}
                       onChange={(event) => onApprovalNoteChange(event.target.value)}
-                      placeholder="Optional note"
+                      placeholder={APP_COPY.common.optionalNote}
                       rows={2}
                       disabled={approving}
                     />
                     <div className="workflow-approval-actions">
                       <button type="button" disabled={approving} onClick={() => onApprove(true)}>
-                        {approving ? "Submitting..." : "Approve"}
+                        {approving ? APP_COPY.common.submitting : APP_COPY.common.approve}
                       </button>
                       <button
                         type="button"
@@ -1046,13 +1360,13 @@ export const RunMessageStream = ({
                         disabled={approving}
                         onClick={() => onApprove(false)}
                       >
-                        {approving ? "Submitting..." : "Reject"}
+                        {approving ? APP_COPY.common.submitting : APP_COPY.common.reject}
                       </button>
                     </div>
                     {runError ? <p className="form-error">{runError}</p> : null}
                   </>
                 ) : (
-                  <p className="muted">Approval checkpoint recorded.</p>
+                  <p className="muted">{APP_COPY.stream.approvalCheckpointRecorded}</p>
                 )}
               </div>
             </article>
@@ -1062,19 +1376,34 @@ export const RunMessageStream = ({
         const isError = item.type === "error";
         const actor = item.type === "assistant" || item.type === "error" ? getAgentMeta(item.agentId) : SystemMeta;
         const artifactState =
-          item.type === "assistant" && item.primaryArtifact ? artifactBodies[item.primaryArtifact.artifactId] : null;
+          item.type === "assistant" && item.primaryArtifact
+            ? artifactBodies[getArtifactPreviewKey(item.primaryArtifact)] ?? getCachedArtifactPreview(item.primaryArtifact)
+            : null;
+        const renderTarget = renderTargetById.get(item.id) ?? null;
+        const renderState = renderStates[item.id];
+        const visibleChars = renderState?.renderedLength ?? (renderTarget?.content.length ?? (isError ? item.text.length : item.type === "assistant" ? item.fallbackText.length : 0));
+        const isTyping = activeRenderTarget?.itemId === item.id && !renderState?.isComplete;
         const markdownReady = item.type === "assistant" && artifactState?.state === "loaded" && item.primaryArtifact;
         const showArtifactLoadingHint =
           item.type === "assistant" && item.primaryArtifact && (!artifactState || artifactState.state === "loading");
         const showArtifactErrorHint =
           item.type === "assistant" && item.primaryArtifact && artifactState?.state === "error";
         const showMarkdownPreview =
-          item.type === "assistant" && markdownReady && item.primaryArtifact && isMarkdownArtifact(item.primaryArtifact);
+          item.type === "assistant" &&
+          markdownReady &&
+          item.primaryArtifact &&
+          (
+            renderTarget?.mode === "markdown" ||
+            Boolean(renderState?.isComplete && artifactState?.state === "loaded")
+          ) &&
+          !isTyping &&
+          latestLoadingMessageId !== item.id &&
+          isMarkdownArtifact(item.primaryArtifact);
         const markdownArtifact = showMarkdownPreview ? item.primaryArtifact : null;
         const showThinkingPanel =
           item.type === "assistant" &&
-          item.thinkingSteps.length > 0 &&
-          (showArtifactLoadingHint || (item.id === latestAnimatedId && !showMarkdownPreview));
+          item.sourceRunId === activeRunId &&
+          (showArtifactLoadingHint || isTyping || latestLoadingMessageId === item.id);
 
         return (
           <article
@@ -1092,13 +1421,24 @@ export const RunMessageStream = ({
             />
             <div className="workflow-stream-bubble">
               {showThinkingPanel ? (
-                <div className="workflow-stream-thinking">
-                  <span className="workflow-stream-thinking-label">Working through</span>
-                  <ul className="workflow-stream-thinking-list">
-                    {item.thinkingSteps.slice(-4).map((step) => (
-                      <li key={`${item.id}-${step}`}>{step}</li>
-                    ))}
-                  </ul>
+                <div className="workflow-stream-thinking workflow-stream-thinking-active">
+                  <div className="workflow-stream-thinking-head">
+                    <span className="workflow-stream-thinking-label">{APP_COPY.stream.thinkingLabel}</span>
+                    <span className="workflow-stream-thinking-pulse" aria-label={APP_COPY.stream.typingAria}>
+                      <span />
+                      <span />
+                      <span />
+                    </span>
+                  </div>
+                  {item.thinkingSteps.length > 0 ? (
+                    <ul className="workflow-stream-thinking-list">
+                      {item.thinkingSteps.slice(-4).map((step) => (
+                        <li key={`${item.id}-${step}`}>{step}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="workflow-stream-thinking-copy">{APP_COPY.stream.activeThinking}</p>
+                  )}
                 </div>
               ) : null}
               {showMarkdownPreview && markdownArtifact ? (
@@ -1107,47 +1447,23 @@ export const RunMessageStream = ({
                     contentType={artifactState.contentType}
                     content={artifactState.content}
                     artifactName={markdownArtifact.name}
-                    active={item.id === latestAnimatedId}
-                    onStep={scrollToBottom}
-                    onTypingChange={(active) => {
-                      setTypingMessageId((current) => {
-                        if (active) {
-                          return item.id;
-                        }
-                        return current === item.id ? null : current;
-                      });
-                    }}
                   />
                 </div>
               ) : (
                 <p className="workflow-stream-text">
                   <TypewriterText
-                    text={isError ? item.text : item.fallbackText}
-                    active={item.id === latestAnimatedId}
-                    animateText={isError}
-                    showIndicator={
-                      isError
-                        ? item.id === latestAnimatedId
-                        : Boolean(showArtifactLoadingHint) && item.id === latestAnimatedId
-                    }
-                    onStep={scrollToBottom}
-                    onTypingChange={(active) => {
-                      setTypingMessageId((current) => {
-                        if (active) {
-                          return item.id;
-                        }
-                        return current === item.id ? null : current;
-                      });
-                    }}
+                    text={renderTarget?.content ?? (isError ? item.text : item.fallbackText)}
+                    visibleChars={visibleChars}
+                    showIndicator={isTyping || latestLoadingMessageId === item.id}
                   />
                 </p>
               )}
               {showArtifactLoadingHint && item.type === "assistant" && item.primaryArtifact ? (
-                <p className="workflow-stream-inline-note">Loading {item.primaryArtifact.name} preview...</p>
+                <p className="workflow-stream-inline-note">{APP_COPY.stream.preparingFormattedReply(item.primaryArtifact.name)}</p>
               ) : null}
               {showArtifactErrorHint && item.type === "assistant" && item.primaryArtifact ? (
                 <p className="workflow-stream-inline-note workflow-stream-inline-note-danger">
-                  Could not load {item.primaryArtifact.name}. Open the attachment directly.
+                  {APP_COPY.stream.couldNotLoadArtifact(item.primaryArtifact.name)}
                 </p>
               ) : null}
               {item.type === "assistant" && item.artifacts.length > 0 ? (
@@ -1175,14 +1491,19 @@ export const RunMessageStream = ({
           <MessageHeader
             actor={SystemMeta}
             ts={Date.now()}
-            extraBadge={<span className="event-badge event-badge-kind">generating</span>}
+            extraBadge={<span className="event-badge event-badge-kind">{APP_COPY.stream.thinkingLabel}</span>}
           />
           <div className="workflow-stream-bubble workflow-stream-bubble-pending">
-            <p className="workflow-stream-text">{getGeneratingCopy(runStatus)}</p>
-            <div className="workflow-stream-generating" aria-label="Assistant is generating">
-              <span />
-              <span />
-              <span />
+            <div className="workflow-stream-thinking workflow-stream-thinking-active">
+              <div className="workflow-stream-thinking-head">
+                <span className="workflow-stream-thinking-label">{APP_COPY.stream.thinkingLabel}</span>
+                <span className="workflow-stream-thinking-pulse" aria-label={APP_COPY.stream.typingAria}>
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </div>
+              <p className="workflow-stream-thinking-copy">{getGeneratingCopy(activeSegment?.runStatus ?? runStatus)}</p>
             </div>
           </div>
         </article>

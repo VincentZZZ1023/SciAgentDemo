@@ -110,6 +110,13 @@ const LegacyTopicsRedirect = () => {
   return <Navigate to={`${path}${location.search}`} replace />;
 };
 
+const LegacyRunsRedirect = () => {
+  const location = useLocation();
+  const { topicId } = useParams();
+  const path = topicId ? `/app/${topicId}` : "/app";
+  return <Navigate to={`${path}${location.search}`} replace />;
+};
+
 export const AppRoutes = () => {
   return (
     <BrowserRouter>
@@ -131,6 +138,8 @@ export const AppRoutes = () => {
           </Route>
           <Route path="/topics" element={<LegacyTopicsRedirect />} />
           <Route path="/topics/:topicId" element={<LegacyTopicsRedirect />} />
+          <Route path="/runs" element={<LegacyRunsRedirect />} />
+          <Route path="/runs/:topicId" element={<LegacyRunsRedirect />} />
         </Route>
 
         <Route path="/" element={<HomeRedirect />} />

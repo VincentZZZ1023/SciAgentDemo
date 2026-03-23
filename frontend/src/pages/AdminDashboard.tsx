@@ -274,7 +274,7 @@ export const AdminDashboard = () => {
     <section className="admin-page">
       <header className="admin-header">
         <div>
-          <span className="admin-header-label">SciAgent Admin</span>
+          <span className="admin-header-label">xcientist Admin</span>
           <h2>Real-Time Command Center</h2>
           <p>
             WS status: <span className={`ws-state ws-${wsStatus}`}>{wsStatus}</span>

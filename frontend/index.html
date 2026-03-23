@@ -1,9 +1,97 @@
 ﻿<!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SciAgentDemo</title>
+    <title>xcientist</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "surface-container-highest": "#d9dde0",
+              "outline-variant": "#abadaf",
+              "inverse-primary": "#5e8bff",
+              "secondary-dim": "#3944ab",
+              "on-background": "#2c2f31",
+              "inverse-on-surface": "#9a9d9f",
+              "tertiary-container": "#f797f0",
+              "on-secondary-container": "#303ba2",
+              "on-primary-fixed": "#000000",
+              outline: "#747779",
+              "secondary-fixed": "#cbceff",
+              "on-primary-container": "#001e58",
+              primary: "#0052d0",
+              "on-tertiary-container": "#610e63",
+              "on-secondary-fixed-variant": "#3a45ac",
+              "primary-fixed": "#799dff",
+              "secondary-fixed-dim": "#babfff",
+              tertiary: "#8d3a8b",
+              "on-primary": "#f1f2ff",
+              "error-container": "#fb5151",
+              "on-error": "#ffefee",
+              "tertiary-fixed-dim": "#e88ae1",
+              "surface-container": "#e5e9eb",
+              "on-tertiary-fixed": "#400042",
+              "on-tertiary-fixed-variant": "#6c1a6c",
+              surface: "#f5f7f9",
+              "tertiary-dim": "#7f2d7e",
+              background: "#f5f7f9",
+              "primary-container": "#799dff",
+              "surface-bright": "#f5f7f9",
+              "inverse-surface": "#0b0f10",
+              secondary: "#4551b7",
+              "surface-variant": "#d9dde0",
+              "surface-tint": "#0052d0",
+              "on-secondary": "#f3f1ff",
+              "on-error-container": "#570008",
+              "on-surface": "#2c2f31",
+              error: "#b31b25",
+              "surface-dim": "#d0d5d8",
+              "on-primary-fixed-variant": "#00276c",
+              "primary-fixed-dim": "#638eff",
+              "on-tertiary": "#ffeef8",
+              "surface-container-lowest": "#ffffff",
+              "surface-container-high": "#dfe3e6",
+              "secondary-container": "#cbceff",
+              "on-surface-variant": "#595c5e",
+              "on-secondary-fixed": "#19248e",
+              "tertiary-fixed": "#f797f0",
+              "surface-container-low": "#eef1f3",
+              "primary-dim": "#0047b7"
+            },
+            fontFamily: {
+              headline: ["Inter"],
+              body: ["Inter"],
+              label: ["Inter"]
+            },
+            borderRadius: {
+              DEFAULT: "1rem",
+              lg: "2rem",
+              xl: "3rem",
+              full: "9999px"
+            }
+          }
+        }
+      };
+    </script>
+    <style>
+      .material-symbols-outlined {
+        font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

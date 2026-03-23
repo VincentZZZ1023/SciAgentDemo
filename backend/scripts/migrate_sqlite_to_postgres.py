@@ -235,7 +235,7 @@ def migrate(sqlite_path: Path, *, dry_run: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Migrate SciAgentDemo data from legacy SQLite to PostgreSQL."
+    description="Migrate xcientist data from legacy SQLite to PostgreSQL."
     )
     parser.add_argument(
         "--sqlite-path",

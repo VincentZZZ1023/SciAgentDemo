@@ -215,6 +215,7 @@ class TopicCreateRequest(BaseModel):
 class TopicSummary(BaseModel):
     topicId: str
     title: str
+    historyTitle: str | None = None
     status: str
     createdAt: int
     updatedAt: int
@@ -249,6 +250,7 @@ class AgentSnapshot(BaseModel):
 class SnapshotActiveRun(BaseModel):
     runId: str
     topicId: str
+    historyTitle: str | None = None
     status: str
     currentModule: str | None = None
     awaitingApproval: bool = False
@@ -340,6 +342,7 @@ class RunCreateRequest(BaseModel):
 class RunCreateResponse(BaseModel):
     runId: str
     topicId: str
+    historyTitle: str | None = None
     status: str
     createdAt: int
     startedAt: int | None = None
@@ -374,6 +377,7 @@ class RunApproveResponse(BaseModel):
 class RunDetailResponse(BaseModel):
     runId: str
     topicId: str
+    historyTitle: str | None = None
     status: str
     createdAt: int
     startedAt: int | None = None

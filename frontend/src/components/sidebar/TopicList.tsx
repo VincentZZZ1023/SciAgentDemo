@@ -1,12 +1,14 @@
-import { FormEvent, MouseEvent, useMemo, useState } from "react";
-import { getBackendBaseUrl } from "../../api/client";
+﻿import { useMemo, useState } from "react";
 import type { AuthUser } from "../../auth/AuthContext";
 import type { TopicSummary } from "../../types/events";
+import { BrandSymbol } from "../brand";
 
 interface TopicListProps {
   user: AuthUser | null;
   isAdmin: boolean;
   topics: TopicSummary[];
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
   currentTopicId?: string;
   loading: boolean;
   error: string;
@@ -18,225 +20,168 @@ interface TopicListProps {
   onLogout: () => void;
 }
 
-const getErrorMessage = (error: unknown): string => {
-  if (error instanceof Error) {
-    return error.message;
+const getTopicDisplayTitle = (topic: TopicSummary): string => {
+  const historyTitle = typeof topic.historyTitle === "string" ? topic.historyTitle.trim() : "";
+  if (historyTitle) {
+    return historyTitle;
   }
-  return "Request failed";
-};
-
-const toFriendlyNetworkHint = (message: string): string | null => {
-  const lower = message.toLowerCase();
-  if (lower.includes("failed to fetch") || lower.includes("network request failed")) {
-    return `Cannot reach backend API (${getBackendBaseUrl()}). Check backend startup/CORS/port.`;
-  }
-  return null;
-};
-
-const formatTopicTime = (timestamp?: number): string => {
-  if (!timestamp || !Number.isFinite(timestamp)) {
-    return "just now";
-  }
-  return new Date(timestamp).toLocaleDateString();
+  return topic.title?.trim() || topic.topicId;
 };
 
 export const TopicList = ({
   user,
-  isAdmin,
   topics,
+  collapsed = false,
+  onToggleCollapsed,
   currentTopicId,
   loading,
   error,
   onSelect,
   onCreate,
-  onDelete,
-  onRefresh,
-  onSwitchAccount,
   onLogout,
 }: TopicListProps) => {
-  const [search, setSearch] = useState("");
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [deletingTopicId, setDeletingTopicId] = useState<string | null>(null);
-  const [createError, setCreateError] = useState("");
-  const networkHint = toFriendlyNetworkHint(error);
+  const [searchValue, setSearchValue] = useState("");
+  const normalizedSearch = searchValue.trim().toLowerCase();
 
-  const filteredTopics = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    if (!keyword) {
-      return topics;
+  const orderedTopics = useMemo(() => {
+    const sorted = [...topics].sort((left, right) => right.updatedAt - left.updatedAt);
+    if (!normalizedSearch) {
+      return sorted;
     }
-    return topics.filter((topic) => topic.title.toLowerCase().includes(keyword));
-  }, [search, topics]);
 
-  const activeCount = useMemo(() => {
-    return topics.filter((topic) => topic.status === "active").length;
-  }, [topics]);
+    return sorted.filter((topic) => {
+      const haystack = `${getTopicDisplayTitle(topic)} ${topic.topicId}`.toLowerCase();
+      return haystack.includes(normalizedSearch);
+    });
+  }, [topics, normalizedSearch]);
 
-  const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const topicName = name.trim();
-
-    if (!topicName) {
-      setCreateError("Topic name is required");
+  const handleCreate = async () => {
+    const name = window.prompt("输入新任务标题");
+    const trimmed = name?.trim();
+    if (!trimmed) {
       return;
     }
-
-    setCreating(true);
-    setCreateError("");
-
-    try {
-      await onCreate(topicName, description.trim());
-      setName("");
-      setDescription("");
-    } catch (createFailed) {
-      setCreateError(getErrorMessage(createFailed));
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleDelete = async (event: MouseEvent<HTMLButtonElement>, topic: TopicSummary) => {
-    event.stopPropagation();
-
-    const confirmed = window.confirm(`Delete topic \"${topic.title}\"?`);
-    if (!confirmed) {
-      return;
-    }
-
-    setDeletingTopicId(topic.topicId);
-    setCreateError("");
-
-    try {
-      await onDelete(topic.topicId);
-    } catch (deleteError) {
-      setCreateError(getErrorMessage(deleteError));
-    } finally {
-      setDeletingTopicId(null);
-    }
+    await onCreate(trimmed, "");
   };
 
   return (
-    <div className="topic-list">
-      <div className="topic-list-brand">
-        <div className="topic-list-brand-mark">SC</div>
-        <div>
-          <h2>SciAgent Console</h2>
-          <p className="muted">Workflow Control Center</p>
+    <div className={`topic-console-sidebar ${collapsed ? "topic-console-sidebar-collapsed" : ""}`}>
+      <div className={`topic-console-fixed-top ${collapsed ? "topic-console-fixed-top-collapsed" : ""}`}>
+        <div className={`topic-console-brand ${collapsed ? "topic-console-brand-collapsed" : ""}`}>
+          <div className="topic-list-brand-mark" aria-hidden="true">
+            <BrandSymbol size={collapsed ? 28 : 38} theme="light" />
+          </div>
+          {!collapsed ? (
+            <div className="topic-list-brand">
+              <div>
+                <p>AI Research Agent</p>
+              </div>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            className="topic-console-collapse"
+            aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+            title={collapsed ? "展开侧边栏" : "收起侧边栏"}
+          >
+            <span className="material-symbols-outlined">{collapsed ? "left_panel_open" : "left_panel_close"}</span>
+          </button>
         </div>
-      </div>
 
-      <div className="topic-list-header">
-        <div className="topic-list-header-meta">
-          <h3>Topics</h3>
-          <span className="topic-list-counter">{topics.length}</span>
-        </div>
         <button
           type="button"
-          className="topic-refresh-button"
-          onClick={() => void onRefresh()}
-          disabled={loading}
+          onClick={() => void handleCreate()}
+          className={`topic-console-primary ${collapsed ? "topic-console-primary-collapsed" : ""}`}
+          title="新建任务"
         >
-          {loading ? "Refreshing..." : "Refresh"}
+          <span className="material-symbols-outlined">add</span>
+          {!collapsed ? <span>New Research Task</span> : null}
         </button>
-      </div>
 
-      <div className="topic-list-toolbar topic-list-section">
-        <input
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search topics"
-          className="topic-search-input"
-        />
-        <div className="topic-list-stats">
-          <span className="topic-stat">
-            <strong>{activeCount}</strong> active
-          </span>
-          <span className="topic-stat">
-            <strong>{topics.length}</strong> total
-          </span>
-        </div>
-      </div>
-
-      {error ? (
-        <div className="topic-list-error topic-list-section">
-          <strong>{error}</strong>
-          {networkHint ? <p className="topic-list-error-hint">{networkHint}</p> : null}
-          <p className="topic-list-error-hint">API: {getBackendBaseUrl()}</p>
-        </div>
-      ) : null}
-
-      <div className="topic-items">
-        {filteredTopics.length === 0 && !loading ? (
-          <p className="muted">{topics.length > 0 ? "No matching topics" : "No topics yet"}</p>
+        {!collapsed ? (
+          <label className="topic-console-search" aria-label="搜索历史会话">
+            <span className="material-symbols-outlined topic-console-search-icon">search</span>
+            <input
+              type="text"
+              value={searchValue}
+              onChange={(event) => setSearchValue(event.target.value)}
+              placeholder="搜索历史会话"
+            />
+          </label>
         ) : null}
-        {filteredTopics.map((topic) => {
-          const active = topic.topicId === currentTopicId;
-          const deleting = deletingTopicId === topic.topicId;
+      </div>
 
-          return (
-            <div key={topic.topicId} className={active ? "topic-item-row active" : "topic-item-row"}>
-              <button type="button" className="topic-item" onClick={() => onSelect(topic.topicId)}>
-                <div className="topic-item-main">
-                  <span className="topic-item-dot" />
-                  <span className="topic-item-title">{topic.title}</span>
+      <div className={`topic-console-scroll-region ${collapsed ? "topic-console-scroll-region-collapsed" : ""}`}>
+        {!collapsed ? (
+          <>
+            <div className="topic-console-nav">
+              <div className="topic-console-nav-item active" title="Task History">
+                <span className="material-symbols-outlined">history</span>
+                <span>Task History</span>
+              </div>
+            </div>
+
+            <div className="topic-console-history" role="list">
+              {loading ? <div className="topic-console-empty">Loading history...</div> : null}
+              {!loading && orderedTopics.length === 0 ? (
+                <div className="topic-console-empty">
+                  {normalizedSearch ? "No matching history." : "No task history yet."}
                 </div>
-                <div className="topic-item-meta">
-                  <span className={`topic-item-status topic-status-${topic.status}`}>{topic.status}</span>
-                  <span className="topic-item-time">{formatTopicTime(topic.updatedAt)}</span>
-                </div>
-              </button>
+              ) : null}
+              {!loading && orderedTopics.map((topic) => {
+                const active = topic.topicId === currentTopicId;
+                return (
+                  <button
+                    key={topic.topicId}
+                    type="button"
+                    onClick={() => onSelect(topic.topicId)}
+                    className={`topic-console-history-item ${active ? "active" : ""}`}
+                    title={getTopicDisplayTitle(topic)}
+                  >
+                    <div className="topic-console-history-title">{getTopicDisplayTitle(topic)}</div>
+                    <div className="topic-console-history-time">
+                      {topic.updatedAt ? new Date(topic.updatedAt).toLocaleString() : "Recently updated"}
+                    </div>
+                  </button>
+                );
+              })}
+              {!loading && error ? <div className="topic-console-error">{error}</div> : null}
+            </div>
+          </>
+        ) : null}
+      </div>
+
+      <div className="topic-console-footer">
+        {!collapsed ? (
+          <div className="topic-console-account-card">
+            <div className="topic-console-account">
+              <div className="topic-console-avatar">{(user?.username ?? "G").slice(0, 1).toUpperCase()}</div>
+              <div className="topic-console-account-copy">
+                <div className="topic-console-account-name">{user?.username ?? "Guest"}</div>
+                <div className="topic-console-role">{user?.role ?? "user"}</div>
+              </div>
               <button
                 type="button"
-                className="topic-delete-button"
-                title="Delete topic"
-                aria-label={`Delete ${topic.title}`}
-                onClick={(event) => void handleDelete(event, topic)}
-                disabled={deleting}
+                onClick={onLogout}
+                className="topic-console-account-logout"
+                title="退出登录"
               >
-                {deleting ? "..." : "Delete"}
+                退出登录
               </button>
             </div>
-          );
-        })}
-      </div>
-
-      <form className="topic-create-form" onSubmit={handleCreate}>
-        <div className="topic-create-head">
-          <h3>Create Topic</h3>
-          <p className="muted">Start a new research workflow</p>
-        </div>
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="Topic name"
-        />
-        <textarea
-          value={description}
-          onChange={(event) => setDescription(event.target.value)}
-          placeholder="Description (optional)"
-          rows={3}
-        />
-
-        {createError ? <p className="topic-list-error">{createError}</p> : null}
-
-        <button type="submit" disabled={creating}>
-          {creating ? "Creating..." : "Create Topic"}
-        </button>
-      </form>
-
-      <div className="topic-account-card">
-        <div className="topic-account-meta">
-          <strong>{user?.username ?? "guest"}</strong>
-          <span>{isAdmin ? "admin" : "user"}</span>
-        </div>
-        <button type="button" onClick={onSwitchAccount}>
-          Switch account
-        </button>
-        <button type="button" className="danger-button" onClick={onLogout}>
-          Logout
-        </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="topic-console-footer-item"
+            title="退出登录"
+            aria-label="退出登录"
+          >
+            <span className="material-symbols-outlined">logout</span>
+          </button>
+        )}
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+﻿import { useMemo, useState } from "react";
 import type { AuthUser } from "../../auth/AuthContext";
+import { BrandSymbol } from "../brand";
 
 export interface SidebarRunHistoryItem {
   topicId: string;
@@ -10,21 +11,15 @@ export interface SidebarRunHistoryItem {
   updatedAtLabel: string;
 }
 
-const toHistoryStatusClass = (status: SidebarRunHistoryItem["status"]): string => {
-  if (status === "running") {
-    return "status-running";
-  }
-  if (status === "paused") {
-    return "status-paused";
-  }
-  return "status-succeeded";
-};
-
 interface ScholarSidebarProps {
   user: AuthUser | null;
   historyItems: SidebarRunHistoryItem[];
   loadingHistory?: boolean;
-  activeHistoryKey?: string | null;
+  activeRunId?: string | null;
+  sessionMode?: "new" | "history";
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+  onNewChat?: () => void;
   onOpenRuns?: () => void;
   onSelectHistoryItem?: (item: SidebarRunHistoryItem) => void;
   onSwitchAccount?: () => void;
@@ -35,144 +30,133 @@ export const ScholarSidebar = ({
   user,
   historyItems,
   loadingHistory,
-  activeHistoryKey,
+  activeRunId,
+  collapsed = false,
+  onToggleCollapsed,
+  onNewChat,
   onOpenRuns,
   onSelectHistoryItem,
-  onSwitchAccount,
   onLogout,
 }: ScholarSidebarProps) => {
   const [searchValue, setSearchValue] = useState("");
-  const displayName = user?.username ?? "guest";
-  const role = user?.role ?? "user";
-  const roleLabel = role === "admin" ? "Admin" : "User";
-  const accountMonogram = displayName.trim().slice(0, 2).toUpperCase() || "SA";
+  const normalizedSearch = searchValue.trim().toLowerCase();
 
-  const filteredHistory = useMemo(() => {
-    const keyword = searchValue.trim().toLowerCase();
-    if (!keyword) {
+  const filteredHistoryItems = useMemo(() => {
+    if (!normalizedSearch) {
       return historyItems;
     }
-    return historyItems.filter(
-      (item) =>
-        item.title.toLowerCase().includes(keyword) ||
-        item.summary.toLowerCase().includes(keyword),
-    );
-  }, [historyItems, searchValue]);
+
+    return historyItems.filter((item) => {
+      const haystack = `${item.title} ${item.summary} ${item.status} ${item.updatedAtLabel}`.toLowerCase();
+      return haystack.includes(normalizedSearch);
+    });
+  }, [historyItems, normalizedSearch]);
 
   return (
-    <aside className="scholar-sidebar">
-      <header className="scholar-sidebar-header">
-        <div className="scholar-brand">
-          <span className="scholar-brand-mark">SA</span>
-          <span className="scholar-brand-copy">
-            <span className="scholar-brand-title">SciAgentDemo</span>
-            <span className="scholar-brand-subtitle">Research workflow studio</span>
-          </span>
-        </div>
-      </header>
-
-      <section className="scholar-sidebar-section">
-        <div className="scholar-sidebar-section-head">
-          <h2>Search</h2>
-          <p>Find previous runs.</p>
-        </div>
-        <label className="scholar-nav-search">
-          <span className="scholar-nav-search-icon">/</span>
-          <input
-            type="text"
-            placeholder="Search run history"
-            value={searchValue}
-            onChange={(event) => setSearchValue(event.target.value)}
-          />
-        </label>
-      </section>
-
-      <section className="scholar-sidebar-section">
-        <div className="scholar-sidebar-section-head">
-          <h2>Runs</h2>
-          <p>Open the latest run workspace.</p>
-        </div>
-        <button type="button" className="scholar-new-search scholar-runs-entry" onClick={onOpenRuns}>
-          <span>Open Runs</span>
-          <span>-&gt;</span>
-        </button>
-      </section>
-
-      <section className="scholar-sidebar-section scholar-history-panel">
-        <div className="scholar-sidebar-section-head">
-          <h2>Run history</h2>
-          <p>Recent runs in a scrollable list.</p>
+    <aside className={`scholar-sidebar hidden md:flex ${collapsed ? "scholar-sidebar-collapsed" : ""}`}>
+      <div className={`scholar-sidebar-fixed-top ${collapsed ? "scholar-sidebar-fixed-top-collapsed" : ""}`}>
+        <div className={`scholar-sidebar-header ${collapsed ? "scholar-sidebar-header-collapsed" : ""}`}>
+          <div className="scholar-brand-mark" aria-hidden="true">
+            <BrandSymbol size={collapsed ? 28 : 38} theme="light" />
+          </div>
+          {!collapsed ? (
+            <div className="scholar-brand-copy">
+              <p className="scholar-brand-subtitle">AI Research Platform</p>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            onClick={onToggleCollapsed}
+            className="scholar-sidebar-collapse"
+            aria-label={collapsed ? "展开侧边栏" : "收起侧边栏"}
+            title={collapsed ? "展开侧边栏" : "收起侧边栏"}
+          >
+            <span className="material-symbols-outlined">{collapsed ? "left_panel_open" : "left_panel_close"}</span>
+          </button>
         </div>
 
-        <div className="scholar-history-list" role="list" aria-label="Run history">
-          {loadingHistory ? (
-            <p className="muted">Loading recent runs...</p>
-          ) : filteredHistory.length > 0 ? (
-            filteredHistory.map((item) => (
-              <button
-                key={`${item.topicId}:${item.runId ?? "topic"}`}
-                type="button"
-                className={
-                  activeHistoryKey === `${item.topicId}:${item.runId ?? "topic"}`
-                    ? "scholar-history-card active"
-                    : "scholar-history-card"
-                }
-                role="listitem"
-                onClick={() => onSelectHistoryItem?.(item)}
-              >
-                <div className="scholar-history-card-head">
-                  <strong>{item.title}</strong>
-                  <span className={`status-badge ${toHistoryStatusClass(item.status)}`}>{item.status}</span>
+        <nav className="scholar-sidebar-actions">
+          <button
+            type="button"
+            onClick={onNewChat}
+            className={`scholar-new-search ${collapsed ? "scholar-new-search-collapsed" : ""}`}
+            title="新对话"
+          >
+            <span className="material-symbols-outlined">add_circle</span>
+            {!collapsed ? <span>New Chat</span> : null}
+          </button>
+          <button
+            type="button"
+            onClick={onOpenRuns}
+            className={`scholar-nav-link ${collapsed ? "scholar-nav-link-collapsed" : ""}`}
+            title="运行页"
+          >
+            <span className="material-symbols-outlined scholar-nav-link-icon">sync</span>
+            {!collapsed ? <span>Running Flows</span> : null}
+          </button>
+        </nav>
+
+        {!collapsed ? (
+          <label className="scholar-sidebar-search" aria-label="搜索历史会话">
+            <span className="material-symbols-outlined scholar-sidebar-search-icon">search</span>
+            <input
+              type="text"
+              value={searchValue}
+              onChange={(event) => setSearchValue(event.target.value)}
+              placeholder="搜索历史会话"
+            />
+          </label>
+        ) : null}
+      </div>
+
+      <div className={`scholar-sidebar-scroll-region ${collapsed ? "scholar-sidebar-scroll-region-collapsed" : ""}`}>
+        {!collapsed ? (
+          <>
+            <div className="scholar-sidebar-section-head scholar-sidebar-history-head">
+              <h2>Recent</h2>
+            </div>
+            <div className="scholar-history-list" role="list">
+              {loadingHistory ? <div className="scholar-history-empty scholar-history-empty-compact">正在加载历史记录...</div> : null}
+              {!loadingHistory && filteredHistoryItems.length === 0 ? (
+                <div className="scholar-history-empty scholar-history-empty-compact">
+                  {normalizedSearch ? "没有匹配的历史会话" : "发起对话后，这里会显示最近历史"}
                 </div>
-                <p>{item.summary}</p>
-                <span className="scholar-history-updated">{item.updatedAtLabel}</span>
-              </button>
-            ))
-          ) : (
-            <div className="scholar-history-empty">
-              <div className="scholar-history-icon">...</div>
-              <div className="scholar-history-copy">
-                <p className="scholar-history-title">No matching runs</p>
-                <p className="scholar-history-hint">
-                  Recent run history will appear here once runs are available.
-                </p>
-              </div>
+              ) : null}
+              {!loadingHistory && filteredHistoryItems.map((item) => (
+                <button
+                  key={`${item.topicId}:${item.runId ?? "topic"}`}
+                  type="button"
+                  onClick={() => onSelectHistoryItem?.(item)}
+                  className={`scholar-history-card ${activeRunId === item.runId ? "active" : ""}`}
+                  title={item.title}
+                >
+                  <div className="scholar-history-card-title">{item.title}</div>
+                  <div className="scholar-history-card-summary">{item.summary}</div>
+                </button>
+              ))}
             </div>
-          )}
-        </div>
-      </section>
+          </>
+        ) : null}
+      </div>
 
-      <footer className="scholar-account-footer">
-        <div className="scholar-sidebar-section-head scholar-user-head">
-          <h2>User</h2>
-          <p>Current workspace identity.</p>
-        </div>
-        <div className="scholar-account-card">
-          <div className="scholar-account-avatar" aria-hidden="true">
-            {accountMonogram}
-          </div>
-          <div className="scholar-account-content">
+      <div className={`scholar-account-card ${collapsed ? "scholar-account-card-collapsed" : ""}`}>
+        {!collapsed ? (
+          <div className="scholar-account-shell">
+            <div className="scholar-account-avatar">{(user?.username ?? "G").slice(0, 1).toUpperCase()}</div>
             <div className="scholar-account-meta">
-              <div className="scholar-account-main">
-                <strong className="scholar-account-name" title={displayName}>
-                  {displayName}
-                </strong>
-                <small className="scholar-account-subtitle">Current workspace account</small>
-              </div>
-              <span className="scholar-account-role">{roleLabel}</span>
+              <div className="scholar-account-name">{user?.username ?? "Guest"}</div>
+              <div className="scholar-account-role">{user?.role ?? "user"}</div>
             </div>
-
-            <div className="scholar-account-actions">
-              <button type="button" className="scholar-auth-button" onClick={onSwitchAccount}>
-                Switch account
-              </button>
-              <button type="button" className="scholar-auth-button primary" onClick={onLogout}>
-                Logout
-              </button>
-            </div>
+            <button type="button" onClick={onLogout} className="scholar-account-logout">
+              退出登录
+            </button>
           </div>
-        </div>
-      </footer>
+        ) : (
+          <button type="button" onClick={onLogout} className="scholar-icon-footer" title="退出登录" aria-label="退出登录">
+            <span className="material-symbols-outlined">logout</span>
+          </button>
+        )}
+      </div>
     </aside>
   );
 };

@@ -1,3 +1,5 @@
+﻿import { formatDrawerTabLabel } from "../../lib/copy";
+
 export type DrawerTab = "log" | "artifacts" | "context";
 
 interface DrawerTabHeaderProps {
@@ -6,9 +8,9 @@ interface DrawerTabHeaderProps {
 }
 
 const TAB_ITEMS: Array<{ id: DrawerTab; label: string }> = [
-  { id: "log", label: "Log" },
-  { id: "artifacts", label: "Artifacts" },
-  { id: "context", label: "Context" },
+  { id: "log", label: formatDrawerTabLabel("log") },
+  { id: "artifacts", label: formatDrawerTabLabel("artifacts") },
+  { id: "context", label: formatDrawerTabLabel("context") },
 ];
 
 export const DrawerTabHeader = ({ activeTab, onSelectTab }: DrawerTabHeaderProps) => {

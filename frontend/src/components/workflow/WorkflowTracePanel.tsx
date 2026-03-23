@@ -1,5 +1,6 @@
-import { TraceFlowCanvas } from "../trace/TraceFlowCanvas";
+﻿import { TraceFlowCanvas } from "../trace/TraceFlowCanvas";
 import { TraceTimeline } from "../trace/TraceTimeline";
+import { APP_COPY, formatResultStatusLabel, type ResultStatus } from "../../lib/copy";
 import type { Artifact, TraceItem } from "../../types/events";
 
 export type TraceView = "timeline" | "graph";
@@ -13,8 +14,6 @@ interface WorkflowTracePanelProps {
   error: string;
   runStatus: string;
 }
-
-type ResultStatus = "running" | "done" | "coming soon";
 
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "paused"]);
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "canceled", "completed", "stopped"]);
@@ -69,14 +68,14 @@ export const WorkflowTracePanel = ({
           className={traceView === "timeline" ? "active" : ""}
           onClick={() => onTraceViewChange("timeline")}
         >
-          Timeline
+          {APP_COPY.trace.timeline}
         </button>
         <button
           type="button"
           className={traceView === "graph" ? "active" : ""}
           onClick={() => onTraceViewChange("graph")}
         >
-          Graph
+          {APP_COPY.trace.graph}
         </button>
       </div>
 
@@ -95,42 +94,42 @@ export const WorkflowTracePanel = ({
           <aside className="workflow-result-panel">
             <header className="workflow-result-panel-header">
               <div>
-                <h4>Result</h4>
-                <p>Lightweight placeholders for downstream outputs.</p>
+                <h4>{APP_COPY.trace.result}</h4>
+                <p>{APP_COPY.trace.resultSubtitle}</p>
               </div>
             </header>
 
             <article className="workflow-result-card">
               <header>
                 <div>
-                  <h5>Report</h5>
-                  <p>Run summary and structured write-up.</p>
+                  <h5>{APP_COPY.trace.report}</h5>
+                  <p>{APP_COPY.trace.reportSubtitle}</p>
                 </div>
-                <span className={`status-badge ${toResultStatusClass(reportStatus)}`}>{reportStatus}</span>
+                <span className={`status-badge ${toResultStatusClass(reportStatus)}`}>{formatResultStatusLabel(reportStatus)}</span>
               </header>
               <p className="workflow-result-placeholder">
                 {reportStatus === "running"
-                  ? "Collecting module outputs and assembling report content."
+                  ? APP_COPY.trace.reportRunning
                   : reportStatus === "done"
-                    ? "Report stage is ready to be surfaced here."
-                    : "Report view is reserved for future expansion."}
+                    ? APP_COPY.trace.reportDone
+                    : APP_COPY.trace.reportComingSoon}
               </p>
             </article>
 
             <article className="workflow-result-card">
               <header>
                 <div>
-                  <h5>Graph</h5>
-                  <p>High-level relationship view placeholder.</p>
+                  <h5>{APP_COPY.trace.graphCardTitle}</h5>
+                  <p>{APP_COPY.trace.graphCardSubtitle}</p>
                 </div>
-                <span className={`status-badge ${toResultStatusClass(graphStatus)}`}>{graphStatus}</span>
+                <span className={`status-badge ${toResultStatusClass(graphStatus)}`}>{formatResultStatusLabel(graphStatus)}</span>
               </header>
               <p className="workflow-result-placeholder">
                 {graphStatus === "running"
-                  ? "Graph insights are being prepared from current run signals."
+                  ? APP_COPY.trace.graphRunning
                   : graphStatus === "done"
-                    ? "Graph slot is ready for future visualization output."
-                    : "Graph rendering is coming soon."}
+                    ? APP_COPY.trace.graphDone
+                    : APP_COPY.trace.graphComingSoon}
               </p>
             </article>
           </aside>

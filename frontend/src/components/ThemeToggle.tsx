@@ -1,10 +1,11 @@
 ﻿import { useTheme } from "../theme/ThemeProvider";
+import { APP_COPY } from "../lib/copy";
 
 export const ThemeToggle = () => {
   const { theme, toggleTheme } = useTheme();
   const icon = theme === "dark" ? "🌙" : "☀️";
-  const label = theme === "dark" ? "Dark" : "Light";
-  const tooltip = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
+  const label = theme === "dark" ? APP_COPY.theme.dark : APP_COPY.theme.light;
+  const tooltip = theme === "dark" ? APP_COPY.theme.switchToLight : APP_COPY.theme.switchToDark;
 
   return (
     <button
