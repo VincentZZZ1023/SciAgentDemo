@@ -1,6 +1,6 @@
+import { motion } from "framer-motion";
 import { useId, useMemo } from "react";
 import type { ComponentPropsWithoutRef } from "react";
-import { useReducedMotion } from "framer-motion";
 import symbolSvgSource from "../../../logo.svg?raw";
 import { parseSvgSource, replaceBlackFill } from "./sourceSvg";
 
@@ -15,6 +15,12 @@ export interface BrandSymbolProps extends Omit<ComponentPropsWithoutRef<"svg">, 
 }
 
 const parsedSymbol = parseSvgSource(symbolSvgSource);
+const [symbolMinX, symbolMinY, symbolWidth, symbolHeight] = parsedSymbol.viewBox.split(/\s+/).map((value) => Number(value));
+const symbolBandWidth = symbolWidth * 0.34;
+const symbolBandHeight = symbolHeight * 1.32;
+const symbolBandStartX = symbolMinX - symbolBandWidth * 1.1;
+const symbolBandEndX = symbolMinX + symbolWidth + symbolBandWidth * 0.22;
+const symbolBandY = symbolMinY - symbolHeight * 0.16;
 
 export default function BrandSymbol({
   size = 40,
@@ -24,54 +30,41 @@ export default function BrandSymbol({
   animated = true,
   ...props
 }: BrandSymbolProps) {
-  const prefersReducedMotion = useReducedMotion();
-  const enableMotion = animated && !prefersReducedMotion;
+  const enableMotion = animated;
   const id = useId().replace(/:/g, "");
   const baseGradientId = `xcientist-symbol-base-${id}`;
   const flowGradientId = `xcientist-symbol-flow-${id}`;
-
-  const basePalette =
-    theme === "dark"
-      ? ["#d4edf8", "#72b3d9", "#3a6ea3"]
-      : ["#c7e6f5", "#68a8cf", "#35689b"];
-  const flowPalette =
-    theme === "dark"
-      ? ["rgba(255,255,255,0)", "rgba(244,251,255,0.12)", "rgba(149,214,244,0.22)", "rgba(255,255,255,0.07)", "rgba(255,255,255,0)"]
-      : ["rgba(255,255,255,0)", "rgba(243,251,255,0.10)", "rgba(128,205,240,0.18)", "rgba(255,255,255,0.06)", "rgba(255,255,255,0)"];
+  const flowMaskId = `xcientist-symbol-mask-${id}`;
 
   const defs = useMemo(() => {
-    const animate = enableMotion
-      ? `
-        <animate attributeName="x1" values="492;640;780;492" dur="7.4s" repeatCount="indefinite" />
-        <animate attributeName="x2" values="650;860;1030;650" dur="7.4s" repeatCount="indefinite" />
-        <animate attributeName="y1" values="178;172;188;178" dur="7.4s" repeatCount="indefinite" />
-        <animate attributeName="y2" values="682;676;694;682" dur="7.4s" repeatCount="indefinite" />`
-      : "";
+    const basePalette =
+      theme === "dark"
+        ? ["#98d6ff", "#4f9ff1", "#236bc7", "#0d3971"]
+        : ["#73c6ff", "#3f8fe8", "#1f63bf", "#0c386f"];
 
     return `
       <defs>
-        <linearGradient id="${baseGradientId}" x1="540" y1="188" x2="996" y2="686" gradientUnits="userSpaceOnUse">
+        <linearGradient id="${baseGradientId}" x1="532" y1="208" x2="1006" y2="652" gradientUnits="userSpaceOnUse">
           <stop offset="0" stop-color="${basePalette[0]}" />
-          <stop offset="0.48" stop-color="${basePalette[1]}" />
-          <stop offset="1" stop-color="${basePalette[2]}" />
+          <stop offset="0.3" stop-color="${basePalette[1]}" />
+          <stop offset="0.66" stop-color="${basePalette[2]}" />
+          <stop offset="1" stop-color="${basePalette[3]}" />
         </linearGradient>
-        <linearGradient id="${flowGradientId}" x1="492" y1="178" x2="650" y2="682" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stop-color="${flowPalette[0]}" />
-          <stop offset="0.24" stop-color="${flowPalette[1]}" />
-          <stop offset="0.5" stop-color="${flowPalette[2]}" />
-          <stop offset="0.74" stop-color="${flowPalette[3]}" />
-          <stop offset="1" stop-color="${flowPalette[4]}" />
-          ${animate}
+        <linearGradient id="${flowGradientId}" x1="0%" y1="14%" x2="100%" y2="86%">
+          <stop offset="0" stop-color="#0c356a" stop-opacity="0" />
+          <stop offset="0.22" stop-color="#1f67bd" stop-opacity="0.14" />
+          <stop offset="0.4" stop-color="#74c8fb" stop-opacity="0.32" />
+          <stop offset="0.5" stop-color="#e2f4ff" stop-opacity="0.58" />
+          <stop offset="0.56" stop-color="#ffffff" stop-opacity="0.64" />
+          <stop offset="0.66" stop-color="#a5dcff" stop-opacity="0.44" />
+          <stop offset="0.82" stop-color="#2f85db" stop-opacity="0.16" />
+          <stop offset="1" stop-color="#0c356a" stop-opacity="0" />
         </linearGradient>
       </defs>`;
-  }, [baseGradientId, basePalette, enableMotion, flowGradientId, flowPalette]);
+  }, [baseGradientId, flowGradientId, theme]);
 
-  const content = useMemo(() => {
-    const baseBody = replaceBlackFill(parsedSymbol.body, `url(#${baseGradientId})`);
-    const flowBody = replaceBlackFill(parsedSymbol.body, `url(#${flowGradientId})`);
-    const titleMarkup = title ? `<title>${title}</title>` : "";
-    return `${titleMarkup}${defs}<g stroke="none">${baseBody}</g><g stroke="none" opacity="0.44">${flowBody}</g>`;
-  }, [baseGradientId, defs, flowGradientId, title]);
+  const baseBody = useMemo(() => replaceBlackFill(parsedSymbol.body, `url(#${baseGradientId})`), [baseGradientId]);
+  const maskBody = useMemo(() => replaceBlackFill(parsedSymbol.body, "#ffffff"), []);
 
   return (
     <svg
@@ -82,8 +75,30 @@ export default function BrandSymbol({
       role="img"
       aria-label={title}
       className={className}
-      dangerouslySetInnerHTML={{ __html: content }}
       {...props}
-    />
+    >
+      {title ? <title>{title}</title> : null}
+      <defs dangerouslySetInnerHTML={{ __html: defs.replace(/^<defs>|<\/defs>$/g, "") }} />
+      <g stroke="none" dangerouslySetInnerHTML={{ __html: baseBody }} />
+      <mask id={flowMaskId} maskUnits="userSpaceOnUse" x={symbolMinX} y={symbolMinY} width={symbolWidth} height={symbolHeight}>
+        <g stroke="none" dangerouslySetInnerHTML={{ __html: maskBody }} />
+      </mask>
+      <motion.rect
+        x={symbolBandStartX}
+        y={symbolBandY}
+        width={symbolBandWidth}
+        height={symbolBandHeight}
+        fill={`url(#${flowGradientId})`}
+        mask={`url(#${flowMaskId})`}
+        opacity={0.7}
+        initial={{ attrX: symbolBandStartX }}
+        animate={enableMotion ? { attrX: symbolBandEndX } : { attrX: symbolBandStartX }}
+        transition={
+          enableMotion
+            ? { duration: 3.3, ease: "linear", repeat: Number.POSITIVE_INFINITY, repeatType: "loop" }
+            : undefined
+        }
+      />
+    </svg>
   );
 }
