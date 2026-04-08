@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from functools import lru_cache
+from os import name as os_name
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,6 +28,10 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg2://sciagent:sciagent@localhost:5432/sciagent"
     artifacts_root: str = "data/artifacts"
+    research_agent_root: str = str((PROJECT_ROOT.parent / "ResearchAgent" / "ResearchAgent").resolve())
+    research_agent_config_path: str = ""
+    research_agent_python: str = ""
+    research_agent_runs_root: str = "data/research_runs"
 
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
@@ -53,6 +58,26 @@ class Settings(BaseSettings):
                 return value
             return [item.strip() for item in stripped.split(",") if item.strip()]
         return value
+
+    @field_validator(
+        "artifacts_root",
+        "research_agent_root",
+        "research_agent_config_path",
+        "research_agent_python",
+        "research_agent_runs_root",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_paths(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+def default_research_agent_python(root: Path) -> Path:
+    if os_name == "nt":
+        return root / ".venv" / "Scripts" / "python.exe"
+    return root / ".venv" / "bin" / "python"
 
 
 @lru_cache

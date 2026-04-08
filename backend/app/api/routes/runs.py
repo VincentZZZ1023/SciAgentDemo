@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.run_config import get_default_run_config
 from app.core.security import get_current_user
 from app.models.schemas import RunCreateRequest, RunCreateResponse, RunDetailResponse
-from app.services.runner import fake_runner
+from app.services.research_agent_runner import research_agent_runner
 from app.store import store
 
 router = APIRouter(tags=["runs"])
@@ -31,7 +31,7 @@ async def create_run(
     except KeyError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topic not found") from exc
 
-    asyncio.create_task(fake_runner.run_pipeline(topicId, run["runId"]))
+    asyncio.create_task(research_agent_runner.run_pipeline(topicId, run["runId"]))
     return RunCreateResponse(**run)
 
 
