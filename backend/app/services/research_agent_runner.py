@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
+from app.core.config import get_settings
 from app.core.run_config import get_default_run_config
 from app.models.schemas import AgentId, ArtifactRef, EventKind, RunConfig, Severity
 from app.services.approval_manager import approval_manager
@@ -53,6 +54,156 @@ class ResearchAgentExecutionError(RuntimeError):
 class ResearchAgentPipelineRunner:
     def __init__(self) -> None:
         self._runtime_builder = ResearchAgentRuntimeConfigBuilder()
+        self._settings = get_settings()
+
+    @staticmethod
+    def _copy_env_values(*keys: str) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for key in keys:
+            value = os.environ.get(key)
+            if value:
+                values[key] = value
+        return values
+
+    @staticmethod
+    def _docker_env_args(env_values: dict[str, str]) -> list[str]:
+        args: list[str] = []
+        for key, value in env_values.items():
+            args.extend(["-e", f"{key}={value}"])
+        return args
+
+    @staticmethod
+    def _docker_blank_env_args(*keys: str) -> list[str]:
+        args: list[str] = []
+        for key in keys:
+            args.extend(["-e", f"{key}="])
+        return args
+
+    def _docker_mount_args(self, runtime: ResearchAgentRuntime) -> list[str]:
+        return [
+            "-v",
+            f"{runtime.research_agent_root}:{runtime.container_research_agent_root}",
+            "-v",
+            f"{runtime.run_dir}:{runtime.container_task_dir}",
+        ]
+
+    def _docker_base_args(
+        self,
+        *,
+        runtime: ResearchAgentRuntime,
+        entrypoint: str,
+        host_network: bool = False,
+        env_values: dict[str, str] | None = None,
+        blank_env_keys: tuple[str, ...] = (),
+    ) -> list[str]:
+        args = ["docker", "run", "--rm"]
+        if host_network:
+            args.extend(["--network", "host"])
+        args.extend(["--entrypoint", entrypoint])
+        if env_values:
+            args.extend(self._docker_env_args(env_values))
+        if blank_env_keys:
+            args.extend(self._docker_blank_env_args(*blank_env_keys))
+        args.extend(self._docker_mount_args(runtime))
+        args.append(self._settings.research_agent_docker_image)
+        return args
+
+    def _build_survey_docker_args(self, runtime: ResearchAgentRuntime) -> list[str]:
+        env_values = self._copy_env_values(
+            "OPENAI_API_KEY",
+            "OPENAI_API_BASE",
+            "OPENAI_BASE_URL",
+            "SEMANTIC_SCHOLAR_API_KEY",
+            "S2_API_KEY",
+            "S2_API_TIMEOUT",
+            "HF_TOKEN",
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+        )
+        return self._docker_base_args(
+            runtime=runtime,
+            entrypoint=str(runtime.container_python_executable),
+            env_values=env_values,
+        ) + [
+            str(runtime.container_survey_adapter_path),
+            "--workspace",
+            str(runtime.container_task_dir),
+            "--config",
+            str(runtime.container_survey_runtime_config_path),
+        ]
+
+    def _build_idea_docker_args(self, runtime: ResearchAgentRuntime) -> list[str]:
+        env_values = self._copy_env_values(
+            "OPENAI_API_KEY",
+            "OPENAI_API_BASE",
+            "OPENAI_BASE_URL",
+            "SEMANTIC_SCHOLAR_API_KEY",
+        )
+        env_values["PYTHONPATH"] = str(runtime.container_research_agent_root)
+        env_values["IDEA_AGENT_CONFIG"] = str(runtime.container_runtime_config_path)
+        return self._docker_base_args(
+            runtime=runtime,
+            entrypoint=str(runtime.container_python_executable),
+            env_values=env_values,
+            blank_env_keys=("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"),
+        ) + [
+            str(runtime.container_idea_adapter_path),
+            "--workspace",
+            str(runtime.container_task_dir),
+            "--config",
+            str(runtime.container_runtime_config_path),
+        ]
+
+    def _build_experiment_docker_args(self, runtime: ResearchAgentRuntime) -> list[str]:
+        node_version = self._settings.research_agent_experiment_node_version.strip() or "20.10.0"
+        env_values = self._copy_env_values(
+            "OPENAI_API_KEY",
+            "OPENAI_API_BASE",
+            "OPENAI_BASE_URL",
+            "OPENHANDS_MCP_TIMEOUT",
+            "S2_API_KEY",
+            "S2_API_TIMEOUT",
+            "SEMANTIC_SCHOLAR_API_KEY",
+            "SERPER_API_KEY",
+            "MINIMAX_API_KEY",
+            "MINIMAX_API_HOST",
+            "XIAOMI_API_KEY",
+            "GITHUB_AI_TOKEN",
+            "JINA_API_KEY",
+            "HF_TOKEN",
+            "TAVILY_API_KEY",
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+        )
+        env_values["PYTHONPATH"] = str(runtime.container_research_agent_root)
+        env_values["HOME"] = "/tmp"
+        env_values["npm_config_cache"] = "/tmp/.npm"
+
+        bootstrap = (
+            f"mkdir -p /tmp/node /tmp/.npm && "
+            f"if [ ! -x /tmp/node/node-v{node_version}-linux-x64/bin/node ]; then "
+            f"curl -fsSL https://nodejs.org/dist/v{node_version}/node-v{node_version}-linux-x64.tar.gz -o /tmp/node.tar.gz && "
+            f"tar -xzf /tmp/node.tar.gz -C /tmp/node; "
+            f"fi && "
+            f"export PATH=/tmp/node/node-v{node_version}-linux-x64/bin:$PATH && "
+            f"{runtime.container_python_executable} "
+            f"{runtime.container_experiment_adapter_path} "
+            f"--workspace {runtime.container_task_dir} "
+            f"--config {runtime.container_runtime_config_path}"
+        )
+        return self._docker_base_args(
+            runtime=runtime,
+            entrypoint="/bin/sh",
+            host_network=True,
+            env_values=env_values,
+        ) + [
+            "-c",
+            bootstrap,
+        ]
 
     @staticmethod
     def _load_run_config(raw_config: object) -> RunConfig:
@@ -92,6 +243,76 @@ class ResearchAgentPipelineRunner:
         if objective:
             lines.append(f"Objective: {objective}")
         return "\n".join(line for line in lines if line)
+
+    @staticmethod
+    def _enabled_modules(run_config: RunConfig) -> list[AgentId]:
+        ordered_modules = [AgentId.review, AgentId.ideation, AgentId.experiment]
+        selected = [agent for agent in run_config.selectedAgents if agent in ordered_modules]
+        if selected:
+            return selected
+        return [agent for agent in ordered_modules if run_config.modules[agent.value].enabled]
+
+    @staticmethod
+    def _build_seed_idea_payload(runtime: ResearchAgentRuntime) -> dict[str, Any]:
+        title = runtime.topic_text or "Experiment Seed Idea"
+        abstract_parts = [part for part in (runtime.input_text, runtime.mature_idea) if part]
+        abstract = "\n\n".join(abstract_parts) or f"Seed experiment plan for {title}."
+        components = [
+            {
+                "component": "problem_definition",
+                "explanation": runtime.input_text or runtime.refinement_scope or f"Target problem for {title}.",
+            },
+            {
+                "component": "method_hypothesis",
+                "explanation": runtime.mature_idea or f"Initial method hypothesis for {title}.",
+            },
+        ]
+        return {
+            "title": title,
+            "abstract": abstract,
+            "introduction": runtime.input_text or runtime.mature_idea or title,
+            "components": components,
+            "algorithm": runtime.mature_idea or runtime.input_text or f"Demo execution plan for {title}.",
+            "reference_papers": [],
+            "mcts_evolution": [],
+            "idea_source": "backend_seed",
+        }
+
+    async def _materialize_seed_idea_result(
+        self,
+        *,
+        topic_id: str,
+        run_id: str,
+        trace_id: str,
+        runtime: ResearchAgentRuntime,
+    ) -> Path:
+        seed_path = runtime.idea_output_root / "output" / "idea_result.json"
+        seed_path.parent.mkdir(parents=True, exist_ok=True)
+        seed_path.write_text(
+            json.dumps(self._build_seed_idea_payload(runtime), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        await self._register_artifact(
+            topic_id=topic_id,
+            run_id=run_id,
+            agent_id=AgentId.ideation,
+            trace_id=trace_id,
+            path=seed_path,
+            handoff_to="experiment",
+            artifact_role="idea_result_seed",
+            summary="backend generated experiment seed idea_result.json",
+        )
+        await self._emit_event(
+            topic_id=topic_id,
+            run_id=run_id,
+            agent_id=AgentId.experiment,
+            trace_id=trace_id,
+            summary="experiment stage bootstrapped from topic-only seed idea",
+            severity=Severity.warn,
+            payload={"stage": "experiment", "seedIdeaPath": str(seed_path)},
+        )
+        return seed_path
 
     async def _run_command(
         self,
@@ -319,29 +540,10 @@ class ResearchAgentPipelineRunner:
             payload={"stage": "review", "topic": runtime.topic_text},
         )
 
-        env = os.environ.copy()
-        env["PYTHONPATH"] = (
-            str(runtime.research_agent_root)
-            if not env.get("PYTHONPATH")
-            else f"{runtime.research_agent_root}{os.pathsep}{env['PYTHONPATH']}"
-        )
-        env["HF_ENDPOINT"] = "https://hf-mirror.com"
-        env["MINERU_MODEL_SOURCE"] = "modelscope"
-        for key in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
-            env.pop(key, None)
-        env["no_proxy"] = "58.210.177.113,localhost,127.0.0.1"
-
         result = await self._run_command(
-            args=[
-                str(runtime.python_executable),
-                str(runtime.survey_adapter_path),
-                "--workspace",
-                str(runtime.run_dir),
-                "--config",
-                str(runtime.survey_runtime_config_path),
-            ],
+            args=self._build_survey_docker_args(runtime),
             cwd=runtime.research_agent_root,
-            env=env,
+            env=os.environ.copy(),
             log_path=runtime.logs_dir / "survey.log",
         )
         if result.returncode != 0:
@@ -465,26 +667,10 @@ class ResearchAgentPipelineRunner:
             payload={"stage": "ideation", "topic": runtime.topic_text},
         )
 
-        env = os.environ.copy()
-        env["PYTHONPATH"] = (
-            str(runtime.research_agent_root)
-            if not env.get("PYTHONPATH")
-            else f"{runtime.research_agent_root}{os.pathsep}{env['PYTHONPATH']}"
-        )
-        env["HF_ENDPOINT"] = "https://hf-mirror.com"
-        env["IDEA_AGENT_CONFIG"] = str(runtime.runtime_config_path)
-
         result = await self._run_command(
-            args=[
-                str(runtime.python_executable),
-                str(runtime.idea_adapter_path),
-                "--workspace",
-                str(runtime.run_dir),
-                "--config",
-                str(runtime.runtime_config_path),
-            ],
+            args=self._build_idea_docker_args(runtime),
             cwd=runtime.research_agent_root,
-            env=env,
+            env=os.environ.copy(),
             log_path=runtime.logs_dir / "idea.log",
         )
         if result.returncode != 0:
@@ -627,31 +813,15 @@ class ResearchAgentPipelineRunner:
             payload={"stage": "experiment"},
         )
 
-        target_idea_json = runtime.experiment_workspace_dir / "idea.json"
-        target_idea_result_json = runtime.experiment_workspace_dir / "idea_result.json"
+        target_idea_json = runtime.run_dir / "idea.json"
+        target_idea_result_json = runtime.run_dir / "idea_result.json"
         shutil.copy(idea_result_path, target_idea_json)
         shutil.copy(idea_result_path, target_idea_result_json)
 
-        env = os.environ.copy()
-        env["PYTHONPATH"] = (
-            str(runtime.research_agent_root)
-            if not env.get("PYTHONPATH")
-            else f"{runtime.research_agent_root}{os.pathsep}{env['PYTHONPATH']}"
-        )
-        env["HF_ENDPOINT"] = "https://hf-mirror.com"
-        env["EXPERIMENT_AGENT_WORKSPACE_DIR"] = str(runtime.experiment_workspace_dir)
-
         result = await self._run_command(
-            args=[
-                str(runtime.python_executable),
-                str(runtime.experiment_adapter_path),
-                "--workspace",
-                str(runtime.experiment_workspace_dir),
-                "--config",
-                str(runtime.runtime_config_path),
-            ],
+            args=self._build_experiment_docker_args(runtime),
             cwd=runtime.research_agent_root,
-            env=env,
+            env=os.environ.copy(),
             log_path=runtime.logs_dir / "experiment.log",
         )
         if result.returncode != 0:
@@ -666,18 +836,23 @@ class ResearchAgentPipelineRunner:
             ("ablation_results.json", "experiment_results"),
             ("final_report.md", "experiment_report"),
         ):
-            path = runtime.experiment_workspace_dir / file_name
-            if not path.exists():
-                continue
-            await self._register_artifact(
-                topic_id=topic_id,
-                run_id=run_id,
-                agent_id=AgentId.experiment,
-                trace_id=trace_id,
-                path=path,
-                artifact_role=artifact_role,
-            )
-            artifact_names.append(file_name)
+            candidate_paths = [
+                runtime.run_dir / file_name,
+                runtime.experiment_workspace_dir / file_name,
+            ]
+            for path in candidate_paths:
+                if not path.exists():
+                    continue
+                await self._register_artifact(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    agent_id=AgentId.experiment,
+                    trace_id=trace_id,
+                    path=path,
+                    artifact_role=artifact_role,
+                )
+                artifact_names.append(file_name)
+                break
 
         if (runtime.logs_dir / "experiment.log").exists():
             await self._register_artifact(
@@ -722,6 +897,11 @@ class ResearchAgentPipelineRunner:
             return
 
         run_config = self._load_run_config(run.get("config"))
+        enabled_modules = self._enabled_modules(run_config)
+        if not enabled_modules:
+            logger.warning("Skipping pipeline start because no modules are enabled (%s, %s)", topic_id, run_id)
+            return
+        active_agent = enabled_modules[0]
 
         try:
             runtime = self._runtime_builder.build(
@@ -743,12 +923,13 @@ class ResearchAgentPipelineRunner:
             await self._emit_event(
                 topic_id=topic_id,
                 run_id=run_id,
-                agent_id=AgentId.review,
+                agent_id=enabled_modules[0],
                 trace_id=trace_id,
                 summary="real agent pipeline started",
                 payload={
                     "runtimeConfig": str(runtime.runtime_config_path),
                     "workspace": str(runtime.run_dir),
+                    "enabledModules": [agent.value for agent in enabled_modules],
                 },
             )
 
@@ -789,6 +970,14 @@ class ResearchAgentPipelineRunner:
             )
             active_agent = AgentId.experiment
             active_runtime = experiment_runtime
+            if idea_result_path is None and experiment_runtime.enabled:
+                idea_result_path = await self._materialize_seed_idea_result(
+                    topic_id=topic_id,
+                    run_id=run_id,
+                    trace_id=trace_id,
+                    runtime=runtime,
+                )
+
             if idea_result_path is None:
                 await self._emit_stage_skipped(
                     topic_id=topic_id,
@@ -819,10 +1008,13 @@ class ResearchAgentPipelineRunner:
             await self._emit_event(
                 topic_id=topic_id,
                 run_id=run_id,
-                agent_id=AgentId.experiment,
+                agent_id=enabled_modules[-1],
                 trace_id=trace_id,
                 summary="real agent pipeline completed",
-                payload={"status": "succeeded"},
+                payload={
+                    "status": "succeeded",
+                    "enabledModules": [agent.value for agent in enabled_modules],
+                },
             )
         except Exception as exc:
             logger.exception("Research agent pipeline failed (topic=%s run=%s)", topic_id, run_id)

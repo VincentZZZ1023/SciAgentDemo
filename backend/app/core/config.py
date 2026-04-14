@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     research_agent_config_path: str = ""
     research_agent_python: str = ""
     research_agent_runs_root: str = "data/research_runs"
+    research_agent_execution_mode: str = "docker"
+    research_agent_docker_image: str = "xcientist:v1.0"
+    research_agent_container_code_dir: str = "/workspace/ResearchAgent"
+    research_agent_container_task_dir: str = "/task"
+    research_agent_container_python: str = "/workspace/miniconda/envs/xcientist/bin/python"
+    research_agent_experiment_node_version: str = "20.10.0"
 
     deepseek_api_key: str | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
@@ -65,6 +71,12 @@ class Settings(BaseSettings):
         "research_agent_config_path",
         "research_agent_python",
         "research_agent_runs_root",
+        "research_agent_execution_mode",
+        "research_agent_docker_image",
+        "research_agent_container_code_dir",
+        "research_agent_container_task_dir",
+        "research_agent_container_python",
+        "research_agent_experiment_node_version",
         mode="before",
     )
     @classmethod

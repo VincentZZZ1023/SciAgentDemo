@@ -9,7 +9,7 @@ from app.models.schemas import RunConfig
 DEFAULT_RUN_CONFIG: dict[str, Any] = {
     "thinkingMode": "quick",
     "online": True,
-    "presetName": "default",
+    "presetName": "full-demo",
     "selectedAgents": ["review", "ideation", "experiment"],
     "modules": {
         "review": {

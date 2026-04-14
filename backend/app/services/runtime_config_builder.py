@@ -17,9 +17,14 @@ from app.models.schemas import RunConfig
 class ResearchAgentRuntime:
     research_agent_root: Path
     python_executable: Path
+    container_research_agent_root: Path
+    container_task_dir: Path
+    container_python_executable: Path
     base_config_path: Path
     runtime_config_path: Path
     survey_runtime_config_path: Path
+    container_runtime_config_path: Path
+    container_survey_runtime_config_path: Path
     run_dir: Path
     config_dir: Path
     logs_dir: Path
@@ -30,6 +35,9 @@ class ResearchAgentRuntime:
     survey_adapter_path: Path
     idea_adapter_path: Path
     experiment_adapter_path: Path
+    container_survey_adapter_path: Path
+    container_idea_adapter_path: Path
+    container_experiment_adapter_path: Path
     topic_text: str
     input_text: str
     mature_idea: str
@@ -134,13 +142,23 @@ class ResearchAgentRuntimeConfigBuilder:
         python_executable = self._resolve_python(research_agent_root)
         base_config_path = self._resolve_base_config_path(research_agent_root)
         runs_root = self._resolve_runs_root()
+        container_research_agent_root = Path(
+            _safe_text(self._settings.research_agent_container_code_dir) or "/workspace/ResearchAgent"
+        )
+        container_task_dir = Path(
+            _safe_text(self._settings.research_agent_container_task_dir) or "/task"
+        )
+        container_python_executable = Path(
+            _safe_text(self._settings.research_agent_container_python)
+            or "/workspace/miniconda/envs/xcientist/bin/python"
+        )
 
         run_dir = (runs_root / run_id).resolve()
         config_dir = run_dir / "config"
         logs_dir = run_dir / "logs"
         survey_output_dir = run_dir / "survey" / "output"
         idea_output_root = run_dir / "idea"
-        experiment_workspace_dir = run_dir / "experiment"
+        experiment_workspace_dir = run_dir
         shared_dir = run_dir / "shared"
 
         for directory in (
@@ -160,14 +178,17 @@ class ResearchAgentRuntimeConfigBuilder:
         topic_text = self._build_topic_text(topic)
         input_text, mature_idea, refinement_scope = self._build_free_text(topic)
 
+        runtime_config.setdefault("workspace", {})
+        runtime_config["workspace"]["root"] = str(container_task_dir)
+
         runtime_config.setdefault("survey", {}).setdefault("BasicInfo", {})
         runtime_config["survey"]["BasicInfo"]["topic"] = topic_text
-        runtime_config["survey"]["BasicInfo"]["base_dir"] = str(survey_output_dir)
-        runtime_config["survey"]["BasicInfo"]["cache_path"] = str(survey_output_dir / "database")
-        runtime_config["survey"]["BasicInfo"]["save_path"] = str(survey_output_dir / "survey.md")
-        runtime_config["survey"]["BasicInfo"]["save_json_path"] = str(survey_output_dir / "survey.json")
+        runtime_config["survey"]["BasicInfo"]["base_dir"] = str(container_task_dir / "survey" / "output")
+        runtime_config["survey"]["BasicInfo"]["cache_path"] = str(container_task_dir / "survey" / "output" / "database")
+        runtime_config["survey"]["BasicInfo"]["save_path"] = str(container_task_dir / "survey" / "output" / "survey.md")
+        runtime_config["survey"]["BasicInfo"]["save_json_path"] = str(container_task_dir / "survey" / "output" / "survey.json")
         runtime_config["survey"]["BasicInfo"]["evaluation_save_path"] = str(
-            survey_output_dir / "evaluation.txt"
+            container_task_dir / "survey" / "output" / "evaluation.txt"
         )
 
         runtime_config.setdefault("idea", {})
@@ -181,8 +202,8 @@ class ResearchAgentRuntimeConfigBuilder:
         runtime_config["idea"]["run"]["mature_idea"] = mature_idea
         runtime_config["idea"]["run"]["refinement_scope"] = refinement_scope
         runtime_config["idea"]["run"]["ablation_results_path"] = ""
-        runtime_config["idea"]["run"]["output_root"] = str(idea_output_root)
-        runtime_config["idea"]["run"]["rag_config"] = str(config_dir / "runtime.yaml")
+        runtime_config["idea"]["run"]["output_root"] = str(container_task_dir / "idea")
+        runtime_config["idea"]["run"]["rag_config"] = str(container_task_dir / "config" / "runtime_full.yaml")
 
         ideation_cfg = run_config.modules.get("ideation")
         if ideation_cfg and ideation_cfg.idea_taste_mode:
@@ -190,13 +211,13 @@ class ResearchAgentRuntimeConfigBuilder:
             runtime_config["idea"]["mcts"]["idea_taste_mode"] = ideation_cfg.idea_taste_mode.value
 
         runtime_config.setdefault("experiment", {}).setdefault("workspace", {})
-        runtime_config["experiment"]["workspace"]["root"] = str(experiment_workspace_dir)
+        runtime_config["experiment"]["workspace"]["root"] = str(container_task_dir)
         runtime_config["experiment"].setdefault("memory", {})
-        runtime_config["experiment"]["memory"]["shared_dir"] = str(shared_dir)
+        runtime_config["experiment"]["memory"]["shared_dir"] = str(container_task_dir / "shared")
 
         runtime_config.setdefault("paper", {}).setdefault("workspace", {})
-        runtime_config["paper"]["workspace"]["root"] = str(run_dir / "paper")
-        runtime_config["paper"]["workspace"]["experiment_root"] = str(experiment_workspace_dir)
+        runtime_config["paper"]["workspace"]["root"] = str(container_task_dir / "paper")
+        runtime_config["paper"]["workspace"]["experiment_root"] = str(container_task_dir)
 
         runtime_config.setdefault("pipeline", {})
         runtime_config["pipeline"]["name"] = run_id
@@ -204,17 +225,17 @@ class ResearchAgentRuntimeConfigBuilder:
         runtime_config.setdefault("pipeline", {}).setdefault("iterate", {})
         runtime_config["pipeline"]["iterate"]["max_iterations"] = 1
         runtime_config.setdefault("pipeline", {}).setdefault("output", {})
-        runtime_config["pipeline"]["output"]["root"] = str(run_dir / "pipeline")
+        runtime_config["pipeline"]["output"]["root"] = str(container_task_dir / "pipeline")
         runtime_config["pipeline"]["output"]["resume_from_iteration"] = None
 
-        runtime_config_path = config_dir / "runtime.yaml"
+        runtime_config_path = config_dir / "runtime_full.yaml"
         runtime_config_path.write_text(
             yaml.safe_dump(runtime_config, sort_keys=False, allow_unicode=True),
             encoding="utf-8",
         )
 
         survey_runtime_config = deepcopy(runtime_config.get("survey", {}) or {})
-        survey_runtime_config_path = config_dir / "survey_runtime.yaml"
+        survey_runtime_config_path = config_dir / "runtime.yaml"
         survey_runtime_config_path.write_text(
             yaml.safe_dump(survey_runtime_config, sort_keys=False, allow_unicode=True),
             encoding="utf-8",
@@ -230,8 +251,14 @@ class ResearchAgentRuntimeConfigBuilder:
         )
         experiment_adapter_path = self._resolve_adapter_path(
             research_agent_root,
-            "src/agents/experiment_agent/run_experiment_adapter.py",
+            "src/agents/experiment_agent/experiment_adapter.py",
         )
+
+        container_runtime_config_path = container_task_dir / "config" / "runtime_full.yaml"
+        container_survey_runtime_config_path = container_task_dir / "config" / "runtime.yaml"
+        container_survey_adapter_path = container_research_agent_root / "src" / "agents" / "survey_agent" / "scripts" / "run_deep_survey_adapter.py"
+        container_idea_adapter_path = container_research_agent_root / "src" / "agents" / "idea_agent" / "run_idea_adapter.py"
+        container_experiment_adapter_path = container_research_agent_root / "src" / "agents" / "experiment_agent" / "experiment_adapter.py"
 
         survey_model = str(
             runtime_config.get("survey", {}).get("APIInfo", {}).get("llm_model_name", "survey")
@@ -246,9 +273,14 @@ class ResearchAgentRuntimeConfigBuilder:
         return ResearchAgentRuntime(
             research_agent_root=research_agent_root,
             python_executable=python_executable,
+            container_research_agent_root=container_research_agent_root,
+            container_task_dir=container_task_dir,
+            container_python_executable=container_python_executable,
             base_config_path=base_config_path,
             runtime_config_path=runtime_config_path,
             survey_runtime_config_path=survey_runtime_config_path,
+            container_runtime_config_path=container_runtime_config_path,
+            container_survey_runtime_config_path=container_survey_runtime_config_path,
             run_dir=run_dir,
             config_dir=config_dir,
             logs_dir=logs_dir,
@@ -259,6 +291,9 @@ class ResearchAgentRuntimeConfigBuilder:
             survey_adapter_path=survey_adapter_path,
             idea_adapter_path=idea_adapter_path,
             experiment_adapter_path=experiment_adapter_path,
+            container_survey_adapter_path=container_survey_adapter_path,
+            container_idea_adapter_path=container_idea_adapter_path,
+            container_experiment_adapter_path=container_experiment_adapter_path,
             topic_text=topic_text,
             input_text=input_text,
             mature_idea=mature_idea,

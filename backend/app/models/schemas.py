@@ -290,6 +290,28 @@ class RunConfig(BaseModel):
         }
     )
 
+    @staticmethod
+    def _infer_preset_name(selected_agents: list[AgentId], thinking_mode: str) -> str:
+        enabled = [agent.value for agent in selected_agents]
+        if enabled == [AgentId.review.value]:
+            base = "survey-only"
+        elif enabled == [AgentId.ideation.value]:
+            base = "idea-only"
+        elif enabled == [AgentId.experiment.value]:
+            base = "experiment-only"
+        elif enabled == [AgentId.review.value, AgentId.ideation.value]:
+            base = "survey-idea"
+        elif enabled == [AgentId.ideation.value, AgentId.experiment.value]:
+            base = "idea-experiment"
+        elif enabled == [AgentId.review.value, AgentId.ideation.value, AgentId.experiment.value]:
+            base = "full-demo"
+        else:
+            base = "custom"
+
+        if thinking_mode in {"deep", "pro"}:
+            return f"{base}-{thinking_mode}"
+        return base
+
     @model_validator(mode="after")
     def validate_modules(self) -> "RunConfig":
         required_keys = {AgentId.review.value, AgentId.ideation.value, AgentId.experiment.value}
@@ -327,6 +349,15 @@ class RunConfig(BaseModel):
                 self.modules[AgentId.ideation.value].idea_taste_mode = IdeaTasteMode.evidence_first
         else:
             self.modules[AgentId.ideation.value].idea_taste_mode = None
+
+        if not any(self.modules[agent_id].enabled for agent_id in required_keys):
+            raise ValueError("at least one module must be enabled")
+
+        normalized_preset = self.presetName.strip() if isinstance(self.presetName, str) else ""
+        if not normalized_preset or normalized_preset == "default":
+            self.presetName = self._infer_preset_name(self.selectedAgents, self.thinkingMode)
+        else:
+            self.presetName = normalized_preset
 
         return self
 
